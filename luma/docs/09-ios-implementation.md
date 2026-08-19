@@ -196,7 +196,7 @@ UI/
     GalleryGrid.swift
     AssetDetailView.swift
   Memory/
-    MemoryView.swift                                                       // §8.8
+    MemoryView.swift                       // pushed from Settings          §8.8
   Settings/
     SettingsView.swift                                                     // §8.9
     ModelsSettingsView.swift
@@ -210,7 +210,7 @@ UI/
     ToastHost.swift  EmptyState.swift  Spinner.swift
     LumaAsyncImage.swift  VideoPlayerView.swift  ImageViewer.swift
 LumaTests/                          // unit: mask, turn builder, SSE parser, decoding
-LumaUITests/                        // XCUITest: the acceptance list in 06 §Acceptance
+LumaUITests/                        // XCUITest: the acceptance list in 07-ios-app-prd.md §17
 ```
 
 The three-way split is load-bearing. `Core/` has no SwiftUI import and is what the
@@ -240,7 +240,7 @@ area up front.
 | Approvals | `POST /approvals/:id { approved }`, `GET /approvals` |
 | Attachments | `POST /files` (multipart `file`, `conversationId`) |
 | Library | `GET /files?kind&source&q&limit&offset`, `POST /files/notes`, `GET/PUT /files/:id/text`, `POST /files/:id/reindex`, `DELETE /files/:id`, `POST /files/search` |
-| Media | `GET /images/:id[?w=]`, `GET /videos/:id` (Range) |
+| Media | `GET /images/:id[?w=]`, `GET /videos/:id` (Range), `GET /images/:id/provenance`, `GET /videos/:id/provenance` |
 | Studio | `GET /studio/tools`, `GET /studio/gallery?limit&offset`, `POST /studio/run` |
 | Jobs | `GET /jobs?status&limit`, `POST /jobs`, `GET /jobs/:id`, `GET /jobs/:id/events`, `POST /jobs/:id/cancel` |
 | Memory | `GET /memory`, `PUT /memory/:key`, `DELETE /memory/:key` |
@@ -1157,16 +1157,20 @@ inset) and **iPad 11″** (834×1194 portrait, 1194×834 landscape).
 
 Size-class driven, one root view.
 
-**Compact (iPhone, iPad slide-over).** A `TabView` with five tabs, because the
-five destinations are peers and a phone has no room for a rail.
+**Compact (iPhone, iPad slide-over).** A `TabView` with four tabs, because the
+four destinations are peers and a phone has no room for a rail.
 
-| Tab | Symbol | Label |
-|---|---|---|
-| Chat | `bubble.left.and.bubble.right` | 对话 |
-| Studio | `wand.and.stars` | 创作 |
-| Library | `folder` | 文件 |
-| Memory | `brain` | 记忆 |
-| Settings | `slider.horizontal.3` | 设置 |
+| Tab | Symbol | Label | Serves |
+|---|---|---|---|
+| Chat | `bubble.left.and.bubble.right` | 对话 | 长篇写作, 图文连载 |
+| Studio | `wand.and.stars` | 创作 | 画图, 短视频 |
+| Library | `folder` | 文件 | where the output of those lands |
+| Settings | `slider.horizontal.3` | 设置 | maintenance, and 记忆 |
+
+Memory is a push from Settings rather than a fifth tab, and the Library is one
+destination rather than a file screen plus a studio gallery. Both follow from the
+ranked uses in `00-product.md §主用途`; the reasoning is in
+`07-ios-app-prd.md §3`, which is where to argue with it.
 
 The Chat tab is a `NavigationStack`: conversation list → transcript. The
 transcript uses `.navigationBarTitleDisplayMode(.inline)` — a large title that
@@ -1179,7 +1183,7 @@ columns:
 ```
 ┌─ 260pt ────────┬─ flexible ─────────────────┬─ 340pt (optional) ─┐
 │ destinations   │ transcript / studio /      │ inspector:          │
-│  + conversation│ library / memory / settings│  job queue, asset   │
+│  + conversation│ library / settings         │  job queue, asset   │
 │    list        │                            │  detail, file detail│
 └────────────────┴────────────────────────────┴─────────────────────┘
 ```
@@ -1501,6 +1505,12 @@ Two presentations, toggled in the nav bar and remembered per `kind` filter: a
 **list** (documents) and a **grid** (images, 3 columns compact / 5 regular, 2pt
 gutter, square tiles, `?w=320`).
 
+The grid is also the studio's gallery — the same `files` rows, which is why there
+is one destination and not two (`07-ios-app-prd.md §3`). Read it through
+`GET /studio/gallery` rather than `GET /files?kind=image` when a tile needs the
+provider, the model or its parent ids: the plain file row does not carry the
+`image_assets` join, and the tile's provenance card wants it.
+
 Facet chips come from the server's `facets`, and the count on a chip is what
 clicking it will show — the server computes each count with the *other* filters
 applied, so the app must display them verbatim and never recompute.
@@ -1606,6 +1616,8 @@ measured from the bytes when the provider does not report them — so the masonr
 never has to guess a ratio or reflow after load.
 
 ### 8.8 Memory
+
+Pushed from Settings → 记忆 rather than owning a tab (`07-ios-app-prd.md §3`).
 
 ```
 ┌──────────────────────────────────────────┐
@@ -1894,7 +1906,7 @@ cache, §6.4), and decoding full-size images (always request `?w=`, §7.6).
 
 **UI (`LumaUITests`)** — against a real audit instance
 (`scripts/restart.ps1 -DataDir data-audit`, access code `AUDITCODE`), one test per
-acceptance item in `07-ios-app-prd.md §Acceptance`:
+acceptance item in `07-ios-app-prd.md §17`:
 
 1. Sign in, send a message, watch it stream, background the app mid-run, resume, transcript is complete.
 2. Kill the app mid-run, relaunch, reattach, transcript is complete.
@@ -1957,7 +1969,7 @@ Recorded so a future reader does not "fix" them.
   thin space between adjacent links. Both are applied outside code spans only.
 - **No theme toggle.** The system decides (§4.4).
 - **Larger body text.** `.body` (17pt) against the web's 14.5px (§4.2).
-- **Tabs instead of a rail** on compact. Five peer destinations, no room.
+- **Tabs instead of a rail** on compact. Four peer destinations, no room.
 - **No syntax highlighting.** Neither has it; adding it to one would split them.
 - **Queue instead of `POST /studio/run`.** A phone locks its screen (§8.7).
 - **Poll in the background.** A browser tab is either open or gone; an app is suspended (§7.5).

@@ -5,9 +5,13 @@
 > 两份都不维护：下面的端点清单、像素尺寸和阶段划分只反映写下它们那一刻的服务
 > 端，服务端此后一直在动。
 >
-> 真要重启这件事，先按 `00-product.md` 重认它的前提，尤其是第 15 节
+> 真要重启这件事，先按 `00-product.md` 重认它的前提，尤其是 §12.3
 > 「transcript 是 agent 唯一的记忆」——那是当下实现的前提，不是永远的立场，
 > 而作品实体与它矛盾（`00-product.md §长篇作品实体：暂缓`）。
+>
+> 重认已经做过一遍，结论记在 §20。三条要点：硬约束与优先项逐条对得上，不必重
+> 写；§3 的信息架构依据（「其余四个存在是因为网页端有」）已被 `00-product.md`
+> 的主用途排序取代，已按新排序改写；§12.3 那条前提扎得比一句话深，标注为过渡。
 
 A native SwiftUI client for the Luma server described in `01-architecture.md`.
 The server is unchanged infrastructure: one process on a home machine, reached
@@ -64,28 +68,47 @@ hardest part of the app.
 
 ## 3. Information architecture
 
-Five destinations. On iPhone they are a tab bar; on iPad they are the sidebar of
+Four destinations. On iPhone they are a tab bar; on iPad they are the sidebar of
 a three-column `NavigationSplitView`.
 
 ```
-Chat        conversation list → transcript          (the app's centre of gravity)
-Library     files and documents → detail → preview
-Studio      generate / edit images → gallery → detail
-Memory      the agent's durable notes about the owner
-Settings    providers → models → capabilities → MCP → prompts → security
+Chat        conversation list → transcript          长篇写作, 图文连载
+Studio      tool → form → queue → result            画图, 短视频
+Library     documents and every generated asset     where the output of the above lives
+Settings    models → capabilities → MCP → prompts → 记忆 → security
 ```
 
-Chat is the default destination on cold start and the app returns to it after
-any modal. The other four exist because the web app has them and the data is
-the same; they are not equally weighted, and Settings in particular is a
-maintenance screen the owner visits rarely.
+A destination costs a quarter of the bar, so the bar answers the ranked uses in
+`00-product.md §主用途` rather than mirroring the web app's sidebar. Chat carries
+the first two uses and is the default on cold start; the app returns to it after
+any modal. Studio carries the other two.
+
+Library is not itself a use. It earns a destination because it is where the output
+of uses two through four accumulates, and because it is the same set of rows as
+the searchable document library — 模型能找到的，你也能找到. That is not a design
+aspiration but how the server is built: `GET /v1/studio/gallery` is
+`files WHERE mime LIKE 'image/%'` joined with `image_assets` for the provider,
+model and parents, and `GET /v1/files?kind=image` is the same rows without the
+join. Two destinations for one table would have been two names for one place.
+
+**记忆 is not a destination.** It is an enabling condition rather than a use
+(`00-product.md §主用途`), it is a handful of short key-value rows, and a fifth of
+the tab bar said the opposite of both. It sits in Settings beside the capability
+switch that governs whether the model may write to it at all, because "what does
+it remember about me" and "may it write" are one visit, not two.
+
+An earlier draft gave Library, Studio and Memory peer status with Chat on the
+grounds that "the web app has them and the data is the same". That is web parity
+rather than a product argument, and `00-product.md` replaced it with an ordered
+list of what the product is for. Settings remains what it was: a maintenance
+screen the owner visits rarely.
 
 Conversation is the only nested navigation stack that can grow deeper than two
 levels (transcript → message actions → file preview → image detail).
 
 ## 4. Navigation
 
-**iPhone.** `TabView` with five tabs. Each tab owns a `NavigationStack`.
+**iPhone.** `TabView` with four tabs (§3). Each tab owns a `NavigationStack`.
 Selecting the already-selected tab pops that stack to its root; selecting it a
 second time while at the root scrolls to top. The conversation list pushes the
 transcript. The transcript is the only screen that hides the tab bar, because
@@ -295,10 +318,16 @@ through "All models…" — an aggregator exposes hundreds and a person uses fou
 
 ### 6.5 Library
 
-`GET /v1/files` with `kind`, `source`, `q`, and offset paging. A segmented
-control for kind (All / Documents / Images) and chips for source, each chip
-carrying the count from `facets` — a count computed with the *other* filters
+One screen for uploads, notes and everything generated, because they are one
+table (§3). `GET /v1/files` with `kind`, `source`, `q`, and offset paging. A
+segmented control for kind (All / Documents / Images) and chips for source, each
+chip carrying the count from `facets` — a count computed with the *other* filters
 applied, so the number on a chip is what tapping it will show.
+
+Filtering to Images is the gallery, and a tile there offers what a gallery tile
+offers: provenance from `GET /v1/images/:id/provenance`, 保存到相册, and 删除.
+`GET /v1/studio/gallery` remains the right call for that grid because it carries
+the provider, model and parent ids the plain file row does not.
 
 Images render as a grid of thumbnails via `GET /v1/images/:id?w=320`. Documents
 render as rows with an embedding-status badge: indexed, pending, or failed with
@@ -312,7 +341,9 @@ edit affordance is absent rather than disabled for them.
 ### 6.6 Studio
 
 Tool picker (from `GET /v1/studio/tools`), a form generated from each tool's
-JSON Schema, and a gallery. The form is generated, not hand-written, so a new
+JSON Schema, and a strip of what this session produced. The full grid is the
+Library filtered to images (§6.5) rather than a second gallery of its own. The
+form is generated, not hand-written, so a new
 backend appears in the app without an app update — the whole reason the studio is
 schema-driven. An entry may be a generation model (one per operation: draw, edit,
 video) or a third-party MCP tool; the app treats them identically because the
@@ -334,8 +365,12 @@ the same row answers a poll after iOS suspends the stream. A result carries
 
 ### 6.7 Memory
 
-A list of `key: value` rows from `GET /v1/memory`, a token budget meter, and
-edit and delete per row. The key field is free text validated against
+Pushed from Settings → 记忆, not a tab (§3). A list of `key: value` rows from
+`GET /v1/memory`, a token budget meter, and edit and delete per row. The
+`memory.writeEnabled` switch belongs on this screen rather than only in
+Capabilities: reading memories into the prompt while refusing writes is a
+deliberate combination, and the place someone decides it is while looking at what
+is stored. The key field is free text validated against
 `^[A-Za-z0-9_-]{1,64}$`, with `suggestedKeys` from the snapshot offered as
 completions. Over-budget writes fail with `400 over_budget` and the app shows
 what would have to be freed.
@@ -352,8 +387,8 @@ capabilities, MCP servers and prompts, one of them the default),
 Capabilities (memory, files, web, coding, embedding, studio, each rendered from
 its own shape), MCP servers (command, args, env, enabled, connection status and
 tool list), Prompts (global, tool, title model, and restoring either prompt to the
-shipped default), and Security (change access code, enrol or remove TOTP, list and
-revoke sessions).
+shipped default), 记忆 (§6.7, which lives here rather than in the tab bar), and
+Security (change access code, enrol or remove TOTP, list and revoke sessions).
 
 Four rules the web app already follows and the phone must not break.
 
@@ -464,7 +499,7 @@ Full Keyboard Access reaches every control in visual order.
 | ⇧↩ | Newline |
 | ⌘. | Stop the run |
 | ⌘⌥→ / ⌘⌥← | Next / previous conversation |
-| ⌘1…⌘5 | Switch destination |
+| ⌘1…⌘4 | Switch destination |
 | ⌘F | Find in transcript |
 | Esc | Dismiss sheet, or unfocus the composer |
 
@@ -538,6 +573,21 @@ will replay the entire event table.
 Editing sends new text at the old message's seq; regenerating sends the original
 text back. There is no branch: the transcript is the agent's only memory, and a
 hidden second history would drift from what the reader sees.
+
+> **This is an interim premise, not a permanent position.** It is true of the
+> server as it stands and everything below follows from it correctly. But
+> `00-product.md` ranks 长篇写作 first and records a 作品实体 — chapters, plates,
+> reorder, regenerate one chapter and keep the twenty after it — as deferred debt
+> rather than as a rejected idea, and rewind-style editing cannot carry that:
+> transcript gives 时间语义, a work gives 文档语义, and they are not the same
+> thing (`00-product.md §长篇作品实体：暂缓`).
+>
+> The dependency is deeper than this paragraph. `fromSeq` editing (§6.3), the
+> `after=-1` refetch rule below, the linear `Turn`/`seq` model
+> (`09-ios-implementation.md §6.2`), and the argument against a local transcript
+> mirror (§19) all assume one timeline. Anyone starting the work entity should
+> expect to redesign that set together, and should not read the sentence above as
+> settled product truth.
 
 Because a rewind reuses sequence numbers, **a client that sends `fromSeq` must
 refetch the transcript from `after=-1` rather than topping up.** Topping up
@@ -734,6 +784,7 @@ GET    /v1/files/:id        DELETE             GET/PUT /v1/files/:id/text
 GET    /v1/files/:id/content                   POST /v1/files/:id/reindex
 POST   /v1/files/search                        GET  /v1/images/:imageId[?w=]
 GET    /v1/videos/:videoId  (Range)
+GET    /v1/images/:imageId/provenance          GET  /v1/videos/:videoId/provenance
 
 GET    /v1/studio/tools     GET /v1/studio/gallery     POST /v1/studio/run
 GET    /v1/jobs             POST /v1/jobs              GET  /v1/jobs/:id
@@ -750,6 +801,13 @@ requires the step-up headers `x-luma-access-code` and `x-luma-totp` and answers
 `403 step_up_required` without them. That is a normal first response, not an
 error state, and a client that treats `403` as a revoked session will sign its
 owner out of the settings screen (`09-ios-implementation.md §5.3`).
+
+The two `/provenance` routes are newer than the rest of this list and were added
+after it was frozen. They assemble what made an asset from the asset row and the
+job row rather than storing a third copy, so the two cannot disagree and a
+picture made before the queue existed still answers with what is on record
+(`08-generation.md`). A detail screen shows that card instead of re-listing the
+backend and the size by hand, which is what the studio used to do.
 
 ### 18.2 Documentation that must be corrected before an app is written against it
 
@@ -841,3 +899,56 @@ image thumbnails covers the real use case.
 an Apple-reachable endpoint, which the Tailscale deployment deliberately does
 not have. Local notifications scheduled from the background poll cover the
 common case at zero operational cost.
+
+## 20. Re-audit against the product definition
+
+`00-product.md` was written after this document was frozen and asks anyone
+restarting the work to re-check its premises first. That pass has been done. What
+follows is the result, so the next reader inherits a conclusion rather than the
+instruction to reach one.
+
+**The hard constraints and the priorities hold, every one of them.** The server
+stays the only truth and the app gets no privileged endpoint (§1); keys are
+write-only (§6.8); no content filtering happens in the client (§14); the token is
+per-device in the Keychain, so nothing assumes a single device (§14); the studio's
+form is generated from the server's schema rather than a second hand-written copy
+(§6.6), which is 一处产出，两个受众; refusals are shown with the server's own
+message rather than a generic string (§8), which is 不静默失败 and 拒绝要给理由;
+sends carry an `Idempotency-Key` (§12.4), which is 准一次落库. None of that needed
+rewriting, and it is most of the document.
+
+**Three things did not hold.**
+
+*The information architecture had the wrong justification.* §3 used to seat four
+destinations beside Chat because "the web app has them and the data is the same".
+`00-product.md` replaced web parity with a ranked list of what the product is
+for, under which 记忆 and 文件检索 are enabling conditions and not uses at all.
+§3 is rewritten: four destinations, 记忆 pushed from Settings, and the library and
+the studio gallery are one place because they are one table.
+
+*The transcript-as-only-memory premise runs deeper than the sentence that states
+it.* Tagged as interim in §12.3, with the set of decisions that would have to move
+together listed there. It is correct about today's server and wrong as a permanent
+product position, and those are compatible statements.
+
+*Two exits from the app are unreconciled, and this one is left open on purpose.*
+`00-product.md` decides 导出：不做, on the grounds that a finished chapter's next
+step is being written further rather than handed to someone. Meanwhile §1 of this
+document already puts sharing out of scope for v1, and yet
+`09-ios-implementation.md §8.4` and §8.6 specify `ShareLink` on a turn and
+保存到相册 on an asset, and the shipped `Info.plist` already asks for photo-library
+permission. The two frozen documents disagree with each other and the product
+definition sides with this one.
+
+The distinction worth drawing before deciding: 保存到相册 is how iOS keeps a
+picture its owner made, and 第三方分发 is about not building a publishing pipeline,
+which a share sheet is not. Sharing a turn's *text*, though, is export under
+another name. So the likely resolution is to keep the first and drop the second —
+but it is a product call, not an implementation detail, and it is recorded here
+unmade.
+
+**Staleness found and fixed.** The freeze banner pointed at §15 for a sentence
+that is in §12.3. §18.1 was missing the two `/provenance` routes. Two section
+cross-references in `09-ios-implementation.md` pointed at a section name and a
+document that do not exist. Everything §18.3 lists as still open is still open,
+verified against the routes rather than assumed.
