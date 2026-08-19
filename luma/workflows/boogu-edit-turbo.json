@@ -1,0 +1,119 @@
+{
+  "luma": {
+    "bind": {
+      "prompt": "8.inputs.prompt",
+      "negative_prompt": "8.inputs.negative_prompt",
+      "source": "1.inputs.image",
+      "megapixels": "2.inputs.megapixels",
+      "seed": "12.inputs.noise_seed",
+      "steps": "11.inputs.steps",
+      "cfg": "12.inputs.cfg",
+      "sampler_name": "10.inputs.sampler_name",
+      "scheduler": "11.inputs.scheduler",
+      "denoise": "11.inputs.denoise"
+    },
+    "controls": {
+      "negative_prompt": {
+        "type": "string",
+        "title": "负面提示词",
+        "default": "",
+        "maxLength": 2000,
+        "description": "只用于画质；CFG 为 1 时不参与计算"
+      },
+      "steps": {
+        "type": "integer",
+        "title": "步数",
+        "default": 4,
+        "minimum": 1,
+        "maximum": 20,
+        "description": "Turbo 权重按 4 步蒸馏"
+      },
+      "cfg": {
+        "type": "number",
+        "title": "CFG",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 6,
+        "description": "Turbo 权重按 CFG 1 训练"
+      },
+      "sampler_name": {
+        "type": "string",
+        "title": "采样器",
+        "default": "lcm",
+        "enum": ["lcm", "euler", "euler_ancestral", "dpmpp_2m", "res_multistep"]
+      },
+      "scheduler": {
+        "type": "string",
+        "title": "调度器",
+        "default": "sgm_uniform",
+        "enum": ["sgm_uniform", "beta", "normal", "simple", "karras"]
+      },
+      "denoise": {
+        "type": "number",
+        "title": "重绘幅度",
+        "default": 1,
+        "minimum": 0.1,
+        "maximum": 1,
+        "description": "低于 1 会保留更多原图"
+      },
+      "seed": { "type": "integer", "title": "随机种子", "default": -1, "minimum": -1, "description": "-1 每次随机" }
+    }
+  },
+  "1": { "class_type": "LoadImage", "inputs": { "image": "" } },
+  "2": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": { "image": ["1", 0], "upscale_method": "lanczos", "megapixels": 1, "resolution_steps": 16 }
+  },
+  "3": { "class_type": "GetImageSize", "inputs": { "image": ["2", 0] } },
+  "4": {
+    "class_type": "CLIPLoader",
+    "inputs": { "clip_name": "qwen3vl_8b_fp8_scaled.safetensors", "type": "boogu", "device": "default" }
+  },
+  "5": { "class_type": "VAELoader", "inputs": { "vae_name": "flux1_vae_bf16.safetensors" } },
+  "6": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "boogu_image_edit_turbo_hotfix_1k_20260708_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "7": { "class_type": "ModelSamplingAuraFlow", "inputs": { "model": ["6", 0], "shift": 3.16 } },
+  "8": {
+    "class_type": "TextEncodeBooguEdit",
+    "inputs": {
+      "clip": ["4", 0],
+      "vae": ["5", 0],
+      "images.image_1": ["2", 0],
+      "prompt": "",
+      "negative_prompt": ""
+    }
+  },
+  "9": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": ["3", 0], "height": ["3", 1], "batch_size": 1 }
+  },
+  "10": { "class_type": "KSamplerSelect", "inputs": { "sampler_name": "lcm" } },
+  "11": {
+    "class_type": "BasicScheduler",
+    "inputs": { "model": ["7", 0], "scheduler": "sgm_uniform", "steps": 4, "denoise": 1 }
+  },
+  "12": {
+    "class_type": "SamplerCustom",
+    "inputs": {
+      "model": ["7", 0],
+      "positive": ["8", 0],
+      "negative": ["8", 1],
+      "sampler": ["10", 0],
+      "sigmas": ["11", 0],
+      "latent_image": ["9", 0],
+      "add_noise": true,
+      "noise_seed": 1,
+      "cfg": 1
+    }
+  },
+  "13": { "class_type": "VAEDecode", "inputs": { "samples": ["12", 0], "vae": ["5", 0] } },
+  "14": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["13", 0], "filename_prefix": "luma_edit" }
+  }
+}

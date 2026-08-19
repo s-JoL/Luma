@@ -1,0 +1,17 @@
+node_modules/
+dist/
+data/
+# Throwaway clone of the live database made by scripts/audit-db.ts. Carries a
+# copy of master.key, so it must never be committed even though its access code
+# is a placeholder.
+data-audit/
+# Bundled Node and cloudflared binaries: ~150 MB, installed per machine.
+runtime/
+# Pid files and process logs written by scripts/start.ps1.
+run/
+*.tsbuildinfo
+*.log
+.env*
+!.env.example
+__pycache__/
+*.pyc

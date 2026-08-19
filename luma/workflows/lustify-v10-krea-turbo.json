@@ -1,0 +1,83 @@
+{
+  "luma": {
+    "bind": {
+      "prompt": "4.inputs.text",
+      "width": "7.inputs.width",
+      "height": "7.inputs.height",
+      "seed": "8.inputs.seed",
+      "steps": "8.inputs.steps",
+      "cfg": "8.inputs.cfg",
+      "sampler_name": "8.inputs.sampler_name",
+      "scheduler": "8.inputs.scheduler",
+      "denoise": "8.inputs.denoise"
+    },
+    "controls": {
+      "steps": {
+        "type": "integer",
+        "title": "步数",
+        "default": 8,
+        "minimum": 1,
+        "maximum": 30,
+        "description": "Turbo 权重按 8 步蒸馏，加步数只会更慢"
+      },
+      "cfg": {
+        "type": "number",
+        "title": "CFG",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 8,
+        "description": "Turbo 权重按 CFG 1 训练，调高会过曝"
+      },
+      "sampler_name": {
+        "type": "string",
+        "title": "采样器",
+        "default": "euler",
+        "enum": ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "res_multistep", "lcm"]
+      },
+      "scheduler": {
+        "type": "string",
+        "title": "调度器",
+        "default": "beta",
+        "enum": ["beta", "normal", "simple", "sgm_uniform", "karras", "ddim_uniform"]
+      },
+      "denoise": { "type": "number", "title": "重绘幅度", "default": 1, "minimum": 0.1, "maximum": 1 },
+      "seed": { "type": "integer", "title": "随机种子", "default": -1, "minimum": -1, "description": "-1 每次随机" }
+    }
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "lustify_v10_krea_turbo_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": { "clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default" }
+  },
+  "3": { "class_type": "VAELoader", "inputs": { "vae_name": "wan_2.1_vae.safetensors" } },
+  "4": { "class_type": "CLIPTextEncode", "inputs": { "text": "", "clip": ["2", 0] } },
+  "5": { "class_type": "ConditioningZeroOut", "inputs": { "conditioning": ["4", 0] } },
+  "6": { "class_type": "ModelSamplingAuraFlow", "inputs": { "model": ["1", 0], "shift": 4 } },
+  "7": { "class_type": "EmptyLatentImage", "inputs": { "width": 1152, "height": 1536, "batch_size": 1 } },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["6", 0],
+      "seed": 1,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["7", 0],
+      "denoise": 1
+    }
+  },
+  "9": { "class_type": "VAEDecode", "inputs": { "samples": ["8", 0], "vae": ["3", 0] } },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["9", 0], "filename_prefix": "luma_generate" }
+  }
+}

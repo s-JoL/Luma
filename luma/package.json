@@ -1,0 +1,56 @@
+{
+  "name": "luma",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "tsx watch src/server/main.ts",
+    "build": "vite build",
+    "start": "tsx src/server/main.ts",
+    "typecheck": "tsc --noEmit",
+    "audit": "tsx scripts/audit-dead.ts && tsx scripts/audit-doc-schema.ts && tsx scripts/audit-schema.ts && tsx scripts/audit-prompt.ts && tsx scripts/audit-sessions.ts && tsx scripts/audit-auth.ts && tsx scripts/audit-skills.ts && tsx scripts/audit-generation.ts && tsx scripts/audit-coding.ts && tsx scripts/audit-approvals.ts",
+    "e2e": "tsx scripts/e2e.ts",
+    "tidy": "tsx scripts/tidy.ts",
+    "access-code": "tsx scripts/access-code.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-session-backend-sqlite-node": "0.84.2",
+    "@hono/node-server": "2.1.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "hono": "4.13.2",
+    "js-tiktoken": "1.0.21",
+    "katex": "0.16.22",
+    "lucide-react": "^1.32.0",
+    "mammoth": "1.11.0",
+    "pdfjs-dist": "4.10.38",
+    "radix-ui": "^1.6.7",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "sharp": "^0.35.3",
+    "tailwind-merge": "^3.6.0",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "tailwindcss": "^4.3.3",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "vite": "^8.2.1"
+  }
+}

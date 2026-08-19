@@ -1,0 +1,9 @@
+# ComfyUI is installed and updated on its own; the model directory alone is ~60 GB.
+/ComfyUI/
+
+# ComfyUI process logs.
+/run/
+
+*.log
+*.pyc
+__pycache__/
