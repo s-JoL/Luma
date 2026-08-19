@@ -23,8 +23,16 @@ so a stolen `localStorage` cannot leak it. Both resolve to the same `devices` ro
 verbatim. A third member, `details`, is reserved for structured context a client
 could branch on; no route sets it today, so it is absent from every current
 response and a client must not require it. Status codes: 400 validation, 401
-no/invalid token, 403 revoked, 404, 409 conflict (e.g. a run already active),
-422 capability not configured, 500.
+no/invalid token — which is also what a *revoked* device gets, since its token no
+longer resolves to a session — 403 refused for a reason a new token would not fix
+(`step_up_required`, `bad_step_up`, `bad_origin`), 404, 409 conflict (e.g. a run
+already active), 422 capability not configured, 500.
+
+The 401/403 split is load-bearing for a client's sign-out rule: `401` means the
+credential is gone and the only way forward is signing in again, while `403` means
+this particular request needs something more and the session is fine. A client
+that signs out on `403` will eject its user the first time they try to change the
+access code.
 
 **Pagination.** List endpoints take `?limit=` and return
 `{ items: [...], nextCursor: T | null }`, where `nextCursor` is what to pass
@@ -74,11 +82,27 @@ DELETE /v1/security/sessions/:id           → SecuritySettings
 POST   /v1/security/sessions/revoke-others → SecuritySettings
 ```
 
+**Step-up.** Every route here except `GET /security` and `/totp/confirm` refuses a
+live session on its own and wants the credentials again on the request itself:
+`x-luma-access-code`, plus `x-luma-totp` when a second factor is enrolled.
+Without them the answer is `403 step_up_required`, and with the wrong ones
+`403 bad_step_up`; both are ordinary responses a client re-prompts from, not
+sign-outs. `DELETE /security/totp` also reads its `{ code }` body as a fallback
+for the TOTP header, so the two must carry the same value.
+
+These changes outlive the session that asks for them — a rotated access code and a
+revoked device are still in force long after this token expires — which is why a
+cookie or a bearer token is not enough on its own. Failures are charged to the
+session's own counter and answer `429 too_many_attempts` past the budget, kept
+separate from the login limiter so a fumbled confirmation cannot lock the owner
+out of signing in.
+
 Enrolling a second factor is two steps: `POST /security/totp` returns a secret
 that is held aside, and only a correct code from `/confirm` adopts it. A
 mis-scanned QR therefore cannot lock the owner out of their own server.
 Disabling it needs a current code too, so a hijacked session cannot quietly
-remove the factor.
+remove the factor. `/confirm` needs no step-up precisely because a correct code
+generated from the pending secret already proves the authenticator has it.
 
 Changing the access code revokes every other session, which makes rotation after
 a suspected leak one action instead of a cleanup. A session is identified by the

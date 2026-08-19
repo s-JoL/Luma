@@ -187,8 +187,19 @@ Rows show title, relative timestamp and message count, from
 `GET /v1/conversations`. Search filters titles locally over the loaded page and
 falls back to a server query when the list is longer than one page.
 
-Swipe left: Delete (destructive, confirmed). Swipe right: Archive. Long press:
-a context menu with Rename, Change model, Duplicate title to clipboard, Delete.
+Those three fields are what `ConversationSummary` carries, and the row must not
+promise more. A last-message preview and a marker for a conversation whose run is
+still going are both worth having and are both server work — synthesising either
+on the client means a request per visible row (§18.3).
+
+Swipe left: Delete (destructive, confirmed; refused with `409 run_active` while a
+run is going, which the app reports as "stop the run first" rather than as a
+failure). Long press: a context menu with Rename, Change model, Duplicate title to
+clipboard, Delete.
+
+Archive is not in v1. The column exists and the list already filters on it, but
+nothing sets it over HTTP (§18.3), and shipping a swipe action that calls nothing
+is worse than not having one.
 
 Empty state uses `ContentUnavailableView` with a "New conversation" action.
 An untitled conversation shows "New conversation" until the server's title event
@@ -331,20 +342,41 @@ what would have to be freed.
 
 ### 6.8 Settings
 
-Providers (name, base URL, key state — write-only, never read back), Models
-(add, bulk add from the provider's live catalogue grouped by kind, edit — including
-a generation model's kind, operations and adapter parameters — pin, set default),
-Profiles (the per-conversation bundle of models, capabilities, MCP servers and
-prompts, one of them the default),
+Providers (name, base URL, how the credential is presented — bearer, a named
+header, or none for a self-hosted runtime that authenticates nobody — and key
+state, write-only and never read back), Models (add, bulk add from the provider's
+live catalogue grouped by kind, edit — including a generation model's kind,
+operations and adapter parameters — pin, set default),
+Profiles (the per-conversation bundle of chat, image, edit and video models,
+capabilities, MCP servers and prompts, one of them the default),
 Capabilities (memory, files, web, coding, embedding, studio, each rendered from
 its own shape), MCP servers (command, args, env, enabled, connection status and
-tool list), Prompts (global, tool, title model), and Security (change access
-code, enrol or remove TOTP, list and revoke sessions).
+tool list), Prompts (global, tool, title model, and restoring either prompt to the
+shipped default), and Security (change access code, enrol or remove TOTP, list and
+revoke sessions).
 
-Two rules the web app already follows and the phone must not break: a key is
-write-only (the field shows "configured" or "not configured", never the value),
-and enabling a capability that lacks its secret shows the missing field inline
+Four rules the web app already follows and the phone must not break.
+
+A key is write-only: the field shows "configured" or "not configured", never the
+value.
+
+Enabling a capability that lacks its secret shows the missing field inline
 rather than failing at generation time with `422 not_configured`.
+
+And **a privileged change asks for the credentials again.** Changing the access
+code, enrolling or dropping the second factor, and revoking a session all outlive
+the session requesting them, so the server refuses each on a session alone and
+requires the access code — plus a current TOTP when one is enrolled — on the
+request itself. The app asks in a confirm sheet before acting, and a wrong answer
+re-prompts in place rather than dismissing: this is the one screen whose failure
+mode is the owner locked out of their own server. The refusal arrives as `403`,
+which is emphatically **not** a sign-out; see `09-ios-implementation.md §5.3`,
+because getting this wrong logs the user out every time they open the screen.
+
+An edited prompt must be restorable. The shipped pair improves with the app, and
+an install that saved its own copy would never see any of it again, so both
+editors offer "restore default" whenever the current text differs from what
+`GET /v1/prompts/defaults` returns.
 
 ## 7. Adaptive layout
 
@@ -389,7 +421,7 @@ new server-side failure mode is legible on an app build that predates it.
 |---|---|
 | Swipe from left edge | Back / reveal conversation list |
 | Swipe left on a list row | Delete (destructive, confirmed) |
-| Swipe right on a list row | Archive |
+| Swipe right on a list row | Rename |
 | Long press on a turn | Message actions menu |
 | Pull down on the transcript | Refetch from the last known seq |
 | Pull down on the conversation list | Refresh |
@@ -622,6 +654,12 @@ requested up front when enrolled. Lockout shows a live countdown. The token
 survives a device restart and a background launch before first unlock fails
 closed rather than crashing.
 
+**Step-up.** Changing the access code asks for the current one in a sheet;
+answering it wrong re-prompts in place with the typed access code still there and
+**the app still signed in**; answering it right rotates the code and drops every
+other session. Enrolling TOTP with a wrong confirmation code leaves the factor
+off, and the owner can still sign in with the access code alone.
+
 **Chat.** A 200-message conversation opens in under 250 ms to first paint.
 Streaming holds 60 fps with a code block, a table and display math on screen.
 Stopping a run leaves a partial answer and Continue resumes it. Editing a
@@ -689,7 +727,7 @@ GET    /v1/models           POST/PATCH/DELETE  POST /v1/models/bulk   PUT /v1/mo
 GET    /v1/profiles         POST/PATCH/DELETE  PUT  /v1/profiles/default
 GET    /v1/capabilities     PATCH              PUT/DELETE /v1/capabilities/secrets/:name
 GET    /v1/mcp/servers      POST/PATCH/DELETE  POST /v1/mcp/reconnect
-GET    /v1/prompts          PUT
+GET    /v1/prompts          PUT                GET  /v1/prompts/defaults
 
 GET    /v1/files            POST               POST /v1/files/notes
 GET    /v1/files/:id        DELETE             GET/PUT /v1/files/:id/text
@@ -706,6 +744,12 @@ GET    /v1/security         PUT  /v1/security/access-code
 POST   /v1/security/totp    POST /v1/security/totp/confirm   DELETE /v1/security/totp
 DELETE /v1/security/sessions/:id                POST /v1/security/sessions/revoke-others
 ```
+
+Every `/v1/security` route except the `GET` and `/totp/confirm` additionally
+requires the step-up headers `x-luma-access-code` and `x-luma-totp` and answers
+`403 step_up_required` without them. That is a normal first response, not an
+error state, and a client that treats `403` as a revoked session will sign its
+owner out of the settings screen (`09-ios-implementation.md §5.3`).
 
 ### 18.2 Documentation that must be corrected before an app is written against it
 
@@ -737,18 +781,43 @@ so they are worth reading even though the rest of this document is frozen:
 1. **Restore surfaced over HTTP.** Deleted and overwritten files are archived
    under the data directory with a journal, and `restore_file` exposes that to
    the model. `GET /v1/coding/trash` and `POST /v1/coding/restore` would let the
-   owner recover a file without asking the agent to do it — which is the one item
-   here that is a real capability gap rather than a saved round trip.
-2. **`GET /v1/conversations/:id/runs`** so a relaunch can find an active run
+   owner recover a file without asking the agent to do it — a real capability gap
+   rather than a saved round trip.
+2. **Archive over HTTP.** The other real gap. `conversations.archived` is a
+   column, `listConversations` already filters `archived = 0`, and
+   `getConversation` returns it — but no route sets it, so the field is
+   unreachable by any client. `PATCH /v1/conversations/:id { archived }` is the
+   whole change. Until it lands, both clients have delete as the only way to
+   shorten the list, which is a destructive answer to an organisational problem.
+3. **A preview on `ConversationSummary`.** The list returns id, title, modelId,
+   profileId, timestamps and `messageCount`. A one-line excerpt of the last
+   message — computed server-side and truncated there, so the field is bounded —
+   is what makes a row scannable. The web client does not need it because a
+   desktop list shows forty rows at once; a phone shows eight.
+4. **An active-run marker on the same object.** The store already knows which
+   conversations have a live run — `GET /v1/conversations/:id` reports `activeRun`
+   for one — and surfacing a boolean on the list row is what lets the app answer
+   "did that finish?" without opening anything. This is the single most useful
+   thing a phone list can show that a browser tab does not need, because the
+   phone is what someone picks up two minutes after sending a long question.
+5. **`GET /v1/conversations/:id/runs`** so a relaunch can find an active run
    without remembering a run id.
-3. **`If-None-Match` on `/v1/bootstrap`** so a resume costs a 304 instead of the
+6. **`If-None-Match` on `/v1/bootstrap`** so a resume costs a 304 instead of the
    full settings payload.
-4. **A single `GET /v1/files/:id/thumbnail`** alias, so a client does not have to
+7. **A single `GET /v1/files/:id/thumbnail`** alias, so a client does not have to
    know that images and documents take different paths.
 
-None of it blocks a client. What does block one is the approval card: a
+Items 3 and 4 are here rather than in the client sections because there is no
+honest client-side version of either: both would cost one request per visible
+row.
+
+None of it blocks a client. Two things do, because the server already behaves
+this way and a client that ignores either is broken rather than incomplete. The
+approval card, without which the coding tools cannot be used at all — a
 destructive call waits for an answer, so a client that cannot give one appears to
-hang for fifteen minutes before the request expires unapproved.
+hang for fifteen minutes before the request expires unapproved. And the step-up
+sheet, without which nothing under Security can be changed, since every one of
+those routes refuses a session on its own (§18.1).
 
 ## 19. Rejected alternatives
 

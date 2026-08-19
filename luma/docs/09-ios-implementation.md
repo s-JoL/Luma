@@ -244,7 +244,12 @@ area up front.
 | Studio | `GET /studio/tools`, `GET /studio/gallery?limit&offset`, `POST /studio/run` |
 | Jobs | `GET /jobs?status&limit`, `POST /jobs`, `GET /jobs/:id`, `GET /jobs/:id/events`, `POST /jobs/:id/cancel` |
 | Memory | `GET /memory`, `PUT /memory/:key`, `DELETE /memory/:key` |
-| Settings | `GET/PATCH /capabilities`, `/models`, `/providers`, `/profiles`, `/prompts`, `/mcp/servers`, `/security` |
+| Settings | `GET/PATCH /capabilities`, `/models`, `/providers`, `/profiles`, `/prompts`, `GET /prompts/defaults`, `/mcp/servers` |
+| Security | `GET /security`, then `PUT /security/access-code`, `POST /security/totp`, `POST /security/totp/confirm`, `DELETE /security/totp`, `DELETE /security/sessions/:id`, `POST /security/sessions/revoke-others` |
+
+Security is its own row because every route in it except `GET` and `/confirm`
+carries the step-up headers (§5.4) and none of the generic settings plumbing
+applies.
 
 Two things the app must **not** invent:
 
@@ -435,6 +440,58 @@ because a browser tab has no system appearance to inherit reliably; an iOS app
 does, and an app that ignores it is the thing people complain about. Every colour
 comes from §4.1, so this is free.
 
+### 4.5 Materials: where glass goes, and where it must not
+
+The app is built against the iOS 26 SDK, so the navigation bar, tab bar, sheets
+and menus adopt Liquid Glass with no code. `Core/Design/Glass.swift` extends that
+to the app's own floating controls, behind `#available(iOS 26.0, *)` with a
+`.regularMaterial` fallback, because the deployment target stays at 17.
+
+Apple's rule is the whole discipline here, and it is what separates this from
+blurring things for the sake of it:
+
+> Liquid Glass is best reserved for the navigation layer that floats above the
+> content of your app.
+
+| Glass | Not glass |
+|---|---|
+| The composer | Message bubbles |
+| The jump-to-latest pill | Tool blocks and approval cards |
+| Bars, sheets and menus (system) | Code blocks, tables, images |
+
+Three consequences that are easy to get wrong:
+
+**The composer is a bar, not a row.** It is attached with `safeAreaBar` on iOS 26
+and `safeAreaInset` below it, so the transcript scrolls *underneath* it and picks
+up the system's scroll edge effect. A composer stacked beneath the scroll view in
+a `VStack` is a frosted panel over the page colour — the material renders, and it
+communicates nothing, because there is never any content behind it to refract.
+
+**Never stack glass on glass.** Glass cannot sample glass, so nested surfaces
+tear. Everything in the composer — the field and the send button — lives in one
+`GlassGroup` (`GlassEffectContainer`), which also gives the send button its morph
+between the send and stop shapes via `glassEffectID`.
+
+**Tint only the primary action.** The send button carries the brand gradient; the
+attachment button and the model chip do not. A toolbar where everything is tinted
+has no primary action at all.
+
+### 4.6 Motion
+
+Four effects, each earning its place, and every one of them checks
+`accessibilityReduceMotion` first:
+
+| Effect | Where | Why |
+|---|---|---|
+| Turn arrival | Each turn, 6pt rise over 180ms | An answer that lands reads better than one that pops. Deliberately small — a chat that animates theatrically is tiring by the tenth message. |
+| Streaming caret | End of the tail block | The clearest possible "more is coming", and it does not pull the eye away from the words the way a spinner beside the paragraph does. |
+| Thinking dots + shimmer | Between send and the first token | Says "it heard you" without a spinner's implication that something is stuck. |
+| Running pulse | The conversation row of a live run | Answers "did that finish?" from the list, without opening anything. |
+
+Streaming text itself is **not** animated. A `withAnimation` around an appended
+token re-lays out the whole paragraph on every delta and turns a 60 token/second
+stream into a stutter.
+
 ---
 
 ## 5. Networking
@@ -545,7 +602,7 @@ enum APIError: Error, Sendable {
     case server(status: Int, ServerError)
     case transport(URLError)
     case decoding(String)
-    case unauthorized            // 401/403 → sign out
+    case unauthorized            // 401 only — see below, 403 never signs out
     case offline
 
     /// Safe to show verbatim; the server writes these for people.
@@ -565,6 +622,14 @@ enum APIError: Error, Sendable {
         default: return false
         }
     }
+
+    /// A privileged change the server will not make on a live session alone
+    /// (§5.4). The confirm sheet answers it in place; it is never a sign-out and
+    /// never a toast.
+    var isStepUp: Bool {
+        guard case .server(403, let e) = self else { return false }
+        return e.code == "step_up_required" || e.code == "bad_step_up"
+    }
 }
 ```
 
@@ -578,9 +643,22 @@ Three placements, and a screen picks exactly one:
 - **Full screen** (`ContentUnavailableView`) only when nothing on the screen can
   work: no server configured, or signed out.
 
-`401` and `403` are special: any response with either clears the Keychain and
-routes to sign-in, from wherever it happened. A revoked device (`06-remote-access.md`)
-must not be able to sit on a stale screen.
+**`401` signs out. `403` does not.** Any `401` clears the Keychain and routes to
+sign-in from wherever it happened, because that is what a revoked device gets:
+`requireAuth` fails an unknown or revoked token with `401 unauthorized`
+(`src/server/http/auth.ts`), so a device the owner cut off cannot sit on a stale
+screen (`06-remote-access.md`). There is no `403 revoked`.
+
+Every `403` the app can actually receive is something else, and treating the two
+statuses alike is a real bug rather than a conservative default — it would sign
+the owner out the moment they tapped 修改访问码, since the *first* attempt at any
+privileged change is answered `403` by design:
+
+| Code | Status | What the app does |
+|---|---|---|
+| `step_up_required` | 403 | Re-prompt in the confirm sheet (§5.4, §8.9). Expected on a first attempt. |
+| `bad_step_up` | 403 | Re-prompt in place, keeping the access code and clearing the spent TOTP. |
+| `bad_origin` | 403 | Unreachable for a native client: it is the same-origin check on *cookie*-authenticated writes, and the app sends `Authorization` (§5.4). If it ever appears, the app is sending a cookie it should not be. |
 
 ### 5.4 Auth and the Keychain
 
@@ -615,6 +693,45 @@ exception is `AVPlayer`, which cannot add a header; §7.7.
 `deviceName` on `POST /auth/token` is `UIDevice.current.name` truncated to 40
 characters, so the session list in Settings → 安全 reads *宋亮的 iPhone* rather
 than a UUID.
+
+#### Step-up: the credentials a session is not enough for
+
+Changing the access code, enrolling or removing the second factor, and revoking a
+session all outlive the session that asks for them, so the server demands the
+credentials again on the request itself rather than trusting the token
+(`requireStepUp` in `src/server/http/auth.ts`). Two headers, sent on that one
+request and never stored:
+
+```swift
+// Core/Net/Auth.swift
+struct StepUp: Sendable {
+    var accessCode: String
+    /// Omitted entirely when no authenticator is enrolled.
+    var totp: String = ""
+
+    var headers: [String: String] {
+        ["x-luma-access-code": accessCode]
+            .merging(totp.isEmpty ? [:] : ["x-luma-totp": totp]) { _, new in new }
+    }
+}
+```
+
+Which routes need it, and the two that look like they should but do not:
+
+| Route | Step-up |
+|---|---|
+| `PUT /security/access-code` | yes |
+| `POST /security/totp` | yes |
+| `DELETE /security/totp` | yes — **and** the same code repeated in the body as `{ code }`, which is the server's fallback for the header and must be the same value, not a second one |
+| `DELETE /security/sessions/:id` | yes |
+| `POST /security/sessions/revoke-others` | yes |
+| `POST /security/totp/confirm` | **no** — a correct code from the pending secret proves the authenticator by itself |
+| `GET /security` | **no** — reading the settings is an ordinary authenticated call |
+
+A failed step-up is charged to this session's own counter and answers
+`429 too_many_attempts` past the budget, independently of the login limiter, so a
+fumbled confirmation cannot lock the owner out of signing in. Show that message in
+the sheet like any other refusal.
 
 ### 5.5 Server address
 
@@ -1112,25 +1229,50 @@ Compact: the Chat tab's root. Regular: the sidebar's lower section.
 │  └────────────────────────────────────┘  │
 │  今天                                    │  ← section header, .footnote
 │  ┌────────────────────────────────────┐  │
-│  │ 五图卡点脚本怎么写            14:32│  │  ← row: 64pt
-│  │ 先给你三个开场…                     │  │
+│  │ 五图卡点脚本怎么写            14:32│  │  ← row: 56pt
+│  │ 12 条消息                           │  │
 │  └────────────────────────────────────┘  │
 │  昨天                                    │
 └──────────────────────────────────────────┘
 ```
 
-**Row.** 64pt tall, 12pt side margin, 8pt vertical padding. Title `.body` medium,
-one line, truncating tail. Subtitle: last message preview `.caption` `mutedFg`,
-one line. Trailing: relative time `.caption2` `mutedFg` (今天 → `HH:mm`, this week
-→ 周三, older → `M月d日`). A running run shows a 6pt `brand` dot instead of the
-time, which is how the list answers "did that finish?" without opening anything.
+**Row.** 56pt tall, 12pt side margin, 8pt vertical padding. Title `.body` medium,
+one line, truncating tail. Subtitle: `messageCount` as `N 条消息` in `.caption`
+`mutedFg`. Trailing: relative time `.caption2` `mutedFg` (今天 → `HH:mm`, this
+week → 周三, older → `M月d日`).
+
+**Build the row from what the list actually returns.** `ConversationSummary` is
+id, title, modelId, profileId, createdAt, updatedAt and messageCount — there is no
+last-message preview and no active-run flag on it. A preview subtitle and the
+running dot are both worth having, and both are server work rather than something
+the app can synthesise: fetching the tail of every visible conversation to render
+a subtitle would turn a 30-row page into 31 requests, and it is exactly the kind
+of client-side workaround that makes the list slow on the network the phone is
+actually on. They are filed in `07-ios-app-prd.md §18.3`; until they land the row
+is a title, a count and a time, which is a complete row rather than a stub.
+
+The one place the app *does* know a run is live is a conversation it is already
+following, so a row for an open transcript with an active run may show the 6pt
+`brand` dot in place of the time. It must not try to infer the state of any other
+row.
 
 **Grouping** by day, headers 今天 / 昨天 / `M月d日`, exactly as the web's
 `groupByDay`.
 
-**Swipe.** Trailing: 删除 (`destructive`, confirmation alert naming the title),
-归档. Leading: 重命名 (inline `TextField` alert). Long-press context menu carries
-the same three plus 复制标题.
+**Swipe.** Trailing: 删除 (`destructive`, confirmation alert naming the title).
+Leading: 重命名 (inline `TextField` alert). Long-press context menu carries both
+plus 复制标题.
+
+归档 is deliberately absent. `conversations.archived` is a real column and the
+list query filters on it, but no route sets it — `PATCH /v1/conversations/:id`
+accepts only `title`, `modelId` and `profileId` — so an archive action would have
+nothing to call. It is filed in `07-ios-app-prd.md §18.3`; when the route lands it
+becomes a second trailing swipe and a context-menu item, and a conversation the
+server has archived simply stops appearing in the list.
+
+**Deleting is refused while a run is active.** `DELETE /v1/conversations/:id`
+answers `409 run_active`, so the alert's failure path shows the server's message
+and offers 停止并删除 rather than reporting a generic error.
 
 **Search.** `.searchable(placement: .navigationBarDrawer(displayMode: .always))`,
 debounced 250ms, `GET /conversations/search?q=`. Results replace the list, grouped
@@ -1260,9 +1402,9 @@ numbers across a rewind. Before sending, an alert: 这会删除这条之后的�
 
 **Nav bar.** Back, title (the conversation title, tap to rename inline), then a
 `⇅` button opening the model/profile sheet (§8.5) and a `⋯` menu: 搜索本对话,
-归档, 删除, and 上下文用量 — a small sheet showing tokens used against
-`contextWindow`, since a reader who has been told the context was compacted will
-want to know where they stand.
+删除, and 上下文用量 — a small sheet showing tokens used against `contextWindow`,
+since a reader who has been told the context was compacted will want to know where
+they stand. 归档 joins the menu when the route exists (§8.3).
 
 **Empty state.** Centred, 320pt: brand mark, `你好，宋亮` in `.title3`, and
 `可以联网搜索、检索你的文件、生成和编辑图片与视频。` in `.subheadline`
@@ -1511,50 +1653,179 @@ A `List` with `.insetGrouped` style. Sections and their sub-screens:
 | 服务器 | address (tap to change), version, connection state, 退出登录 |
 | 模型 | 模型 (list), 供应商, 默认模型 |
 | 预设 | profiles list, 默认预设 |
-| 能力 | 联网搜索, 文件检索, 代码, 图片, 视频 |
-| 提示词 | 全局提示词, 工具提示词, 标题模型 |
+| 能力 | 联网搜索, 文件, 向量嵌入, 记忆, 创作台, 代码 |
+| 提示词 | 全局提示, 工具提示, 标题生成 |
 | 扩展 | MCP 服务器 + status dots |
-| 安全 | 访问码, 两步验证, 设备与会话 |
+| 安全 | 访问码, 两步验证, 登录设备, 对外访问 |
 | 关于 | version, build, 开源许可 |
+
+The 能力 rows are the six fields of the `Capabilities` object and nothing else.
+图片 and 视频 are not capabilities — generation is on when a generation model is
+configured, and 技能 is on when a skill exists on disk, so neither has a switch to
+render (`01-architecture.md §Capabilities`).
+
+**Providers.** Name, base URL, key state, and 鉴权方式 — three styles, because an
+aggregator, a relay station and a self-hosted runtime present a credential three
+different ways:
+
+| Style | Sends | Extra fields |
+|---|---|---|
+| `bearer` | `Authorization: Bearer <key>` | none — the default, and one tap |
+| `header` | a named header | 头名称 (`x-api-key`, `api-key`, …) and an optional 前缀 written in front of the key |
+| `none` | nothing | none — a self-hosted Ollama / llama.cpp / vLLM that authenticates by reachability |
+
+Two shapes this takes on the wire and in the form. Bearer travels as `auth: null`,
+which is also what a row that never declared a style means, so the app must send
+`null` rather than `{ style: "bearer" }` and must read an unrecognised style *as*
+bearer. And a `header` style naming no header would be read as bearer by the
+server and send the key somewhere the gateway does not look, so the save button
+stays disabled until 头名称 is non-empty.
+
+Editing a provider never carries the key: `PATCH /providers/:id` takes name, base
+URL and auth, and the key goes to `PUT /providers/:id/key` on its own. A provider
+whose style is `none` shows no key field at all.
 
 **Models.** Grouped by provider, each row: name, `.caption` `mutedFg` with
 `kind · apiMode`, and badges — 默认, 已固定, plus 缺少密钥 in `warning` **only for
-a provider that needs one**. A local ComfyUI model shows 本地 · 无需密钥 and no key
-field; flagging it as missing a key is wrong and is the kind of detail that makes
-a settings screen untrustworthy.
+a provider that needs one**. Two things make a provider keyless and both must
+suppress the badge: a declared `auth.style == "none"`, and a provider hosting only
+models whose `apiMode` needs no key (`needsApiKey`, which is every mode except
+`comfy-workflow`). A local ComfyUI model shows 本地 · 无需密钥 and no key field;
+flagging it as missing a key is wrong and is the kind of detail that makes a
+settings screen untrustworthy.
 
 Rows wrap rather than truncate at 375pt. A provider name and three badges do not
 fit on one line on an SE, and the name is what the reader came for.
 
-Tap a model → editor: 名称, 类型 (`kind`), 协议 (`apiMode`), 上下文窗口,
-最大输出, 思考强度, 温度 (empty means "send nothing"), 系统提示词, 定价,
-启用, 固定. 拉取模型 on a provider runs `GET /providers/:id/models` and offers the
-live catalogue with the server's suggested kind, ops and API mode prefilled and
-editable, multi-select → `POST /models/bulk`. Bulk-added models arrive unpinned;
-an aggregator has hundreds and a person reaches for four.
+Tap a model → editor. A chat model shows 上下文窗口, 最大输出, 思考等级,
+温度 (empty means "send nothing"), 推理模型, 支持图片输入,
+LibreChat 精简请求体 (`librechatCompat`), 模型专属系统提示, 定价, 启用, and
+固定到对话切换器. A generation model shows 支持的操作 (the `ops` set) and
+适配器参数（JSON） instead — the free-form `params` an adapter declares, which for
+a ComfyUI workflow is its node bindings. Both share 名称, 类型 (`kind`) and
+协议 (`apiMode`), and the editor must switch on `kind` rather than showing a
+context window for a diffusion model.
 
-**Profiles.** List with the default marked. Editor: 名称, 聊天模型, 图片模型,
-视频模型, capability switches, MCP server checkboxes, and the prompt pair.
-`默认预设` has a 不设置 option, and it must be reachable even when no default is
-set — an empty default means "use the global settings", which is a real and
-common state, not a missing value.
+拉取模型 on a provider runs `GET /providers/:id/models` and offers the live
+catalogue with the server's suggested kind, ops and API mode prefilled and
+editable, multi-select → `POST /models/bulk`. The suggestion is read off the model
+id and is a starting point, never a verdict, so every field stays editable before
+the add. Bulk-added models arrive unpinned; an aggregator has hundreds and a
+person reaches for four.
 
-**Capabilities.** Switches straight onto `PATCH /capabilities`. The coding group
-has 工作目录 (a path field), 读, 写, 命令行, and text stating that destructive
-calls always ask. Secrets (search API keys) are `SecureField`s that write to
-`PUT /capabilities/secrets/:name` and never read back — the server does not return
-them, and the app must show a 已设置 badge rather than dots pretending to be a
-value.
+**Profiles.** List with the default marked, each row summarising the models it
+sets and its enabled capabilities. Editor: 名称, 标识 (settable only on create),
+对话模型, 图片模型, **编辑模型**, 视频模型, six capability switches
+(图像与视频生成, 联网搜索, 文件检索, 记忆, 技能, 代码工具), MCP server
+checkboxes, and the prompt pair. Every model slot carries a 跟随全局 row and every
+empty field means "follow the deployment", which is why the editor's subtitle says
+so: a profile is a diff against the global settings, not a complete configuration.
+
+编辑模型 (`Profile.editModelId`) is easy to leave out and is not redundant with
+图片模型: empty means edits go to the image model when it declares
+`image_to_image`, and setting it routes 改图 somewhere else. The two slots filter
+the model list by different ops.
+
+`默认预设` has a 不使用预设 option, and it must be reachable even when no default
+is set — an empty default means "use the global settings", which is a real and
+common state, not a missing value. The whole group appears as soon as one profile
+exists, including before any is default, because otherwise that state is invisible.
+
+**Capabilities.** Switches straight onto `PATCH /capabilities`, which merges a
+partial one level deep per group — so a single switch sends
+`{ memory: { writeEnabled: false } }` rather than the whole object, and two
+screens editing different groups cannot clobber each other. Six groups, matching
+the `Capabilities` object exactly, and the app must not invent a grouping:
+
+| Group | Controls |
+|---|---|
+| 联网搜索 | enable `web_search`, the adapter, and the Tavily key |
+| 文件 | 允许上传文件 (`files.enabled`), 启用 file_search (`searchEnabled`), 检索方式 (keyword / semantic / hybrid) |
+| 向量嵌入 | base URL, 模型, 切片大小, 切片重叠, key — the index behind file search |
+| 记忆 | 在系统提示中注入记忆 (`enabled`), **允许模型写入记忆** (`writeEnabled`), Token 上限, 单条字符上限, 建议键 |
+| 创作台 | enable the studio screen, plus which MCP servers it may drive |
+| 代码 | 工作目录 (a path field), 读, 写, 命令行, and text stating that destructive calls always ask |
+
+`memory.writeEnabled` is a separate switch from `memory.enabled` and controls
+whether the model gets `set_memory` and `delete_memory` at all; reading memories
+into the prompt while refusing writes is a deliberate and useful combination.
+
+Secrets — the Tavily and embedding keys, the only two names
+`PUT /capabilities/secrets/:name` accepts — are `SecureField`s that never read
+back. The server returns `hasTavilyKey` and `hasKey` booleans and nothing else, so
+the app shows a 已设置 badge rather than dots pretending to be a value.
 
 Toggles are **serialised**: one in-flight `PATCH` at a time per section, queued.
 Firing three PATCHes at once against the same object loses two of them, and the
 symptom is a switch that flips back a second later.
 
-**Security.** 访问码 change (with a warning that it revokes every other session),
-TOTP enrolment showing the `otpauth://` QR plus the secret to copy, confirm with a
-code, and a device list with 撤销 per row and 撤销其他所有设备. Enrolment is two
-steps server-side and the UI must not shortcut it: a mis-scanned QR that adopted
-itself would lock the owner out.
+The 创作台 group is the one slow toggle. Changing whether the studio is on, or
+which MCP servers it may drive, makes the server re-run its connect pass before
+answering, which can take seconds on a cold stdio server. Show a spinner on that
+row rather than letting it look hung, and keep the rest of the section usable.
+
+**Prompts.** 全局提示 and 工具提示 as full-height editors, plus 标题生成 —
+a switch for 首轮结束后自动命名对话 (`titleEnabled`) and a model picker whose
+empty option reads 跟随当前对话模型. The tool prompt supports `{{model_name}}` and
+`{{provider_name}}` placeholders, which the field's footnote must say, because
+they are invisible until something renders them wrong.
+
+Both editors carry a 恢复默认 button, fed by `GET /v1/prompts/defaults` — the
+shipped pair, fetched alongside `GET /v1/prompts` when the screen opens. The
+button appears **only when the current value differs from the default**, so it is
+absent on a clean install rather than sitting there inviting a tap. Restoring
+fills the editor and does not save; the screen has one 保存全部 button and
+restoring is an edit like any other.
+
+This exists because an edited prompt is otherwise a one-way door: the recommended
+pair improves with the app, and an install that saved its own copy would never see
+any of it again. An app that omits the button quietly makes that permanent.
+
+**Security.** Four groups, mirroring `screens/settings/security.tsx`: 访问码
+(with a badge reading HTTPS or 明文 HTTP from `overTls`, and the warning that a
+change revokes every other session), 两步验证, 登录设备 with 注销 per row and
+注销其他设备, and 对外访问 — a read-only note carrying the `trustProxy` badge
+(已信任反向代理 / 仅本机地址) and pointing at `06-remote-access.md`, because a
+deployment behind a tunnel without `LUMA_TRUST_PROXY` rate-limits every request
+against one shared bucket and cannot tell HTTPS from cleartext.
+
+Enrolment is two steps server-side and the UI must not shortcut it: `POST
+/security/totp` returns a secret that is only *held*, and only a correct code
+through `/confirm` adopts it. A mis-scanned QR that adopted itself would lock the
+owner out of their own server. Show the `otpauth://` URI as a QR the phone can
+hand to a second device plus the raw secret to copy, and gate revealing either
+behind Face ID (§14 of the PRD).
+
+**The step-up sheet.** Every privileged change here needs the credentials again
+(§5.4), and the app asks for them *before* running the action rather than after
+being refused. One reusable sheet, modelled on the web's `StepUpConfirm`, takes a
+title, one sentence naming what is being authorised, and the closure to run:
+
+```swift
+struct Confirmable {
+    let title: String        // 修改访问码
+    let detail: String       // 确认后访问码立即更换，其他设备需要用新的访问码重新登录。
+    let danger: Bool
+    let confirm: String      // the button's label
+    let run: @Sendable (StepUp) async throws -> Void
+}
+```
+
+Fields: 访问码 (`SecureField`, `.password` content type) and, only when
+`totpEnabled`, 验证器动态码 (6-digit, `.numberPad`, `.oneTimeCode`). The button
+enables on a non-empty code plus six digits when required.
+
+Three rules, and the first is the one that makes this screen safe:
+
+1. **A refused confirmation never closes the sheet.** `isStepUp` (§5.3) re-prompts
+   in place with the access code kept and the TOTP cleared — the code just typed is
+   either wrong or already spent, and a fresh one is needed either way.
+   `too_many_attempts` also shows in place. Only an unrelated failure dismisses to
+   a toast. This is the one screen a locked-out owner cannot recover from, so
+   losing their typed input to a dismissed sheet is the worst available outcome.
+2. **The error never says which half was wrong.** One message under both fields,
+   as the server does: naming the wrong factor is exactly what an attacker wants.
+3. **Escape and the backdrop dismiss, a submission in flight does not.**
 
 ---
 
@@ -1667,6 +1938,23 @@ one can ship on its own.
 
 Recorded so a future reader does not "fix" them.
 
+- **The project is generated from `ios/project.yml` by XcodeGen**, not a committed
+  `pbxproj`. A generated project has a readable diff and cannot accumulate the
+  stale file references a hand-edited one collects. Run `xcodegen` after adding a
+  source *directory* or a test file; a new file inside an existing directory needs
+  nothing.
+- **Colour tokens are dynamic `UIColor`s in `Tokens.swift`, not 22 Asset Catalog
+  colour sets.** The behaviour is identical — UIKit resolves the pair against the
+  trait collection, so the app follows the system appearance with no code at a
+  call site — and one table of light/dark pairs is reviewable against §4.1 in a
+  way twenty-two `Contents.json` files are not. Only `AccentColor` and
+  `background` are also in the catalog, because the global tint and the launch
+  screen are read before any Swift runs.
+- **The two prose repairs run on the source text, not on a parsed tree.**
+  `swift-markdown-ui` owns its parser and offers no hook between parsing and
+  rendering, so `ProseFixups` does what `remarkProseFixups` does by other means:
+  a zero-width space next to a `**` that CommonMark would refuse to close, and a
+  thin space between adjacent links. Both are applied outside code spans only.
 - **No theme toggle.** The system decides (§4.4).
 - **Larger body text.** `.body` (17pt) against the web's 14.5px (§4.2).
 - **Tabs instead of a rail** on compact. Five peer destinations, no room.
