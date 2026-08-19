@@ -50,6 +50,10 @@ export function settingsRoutes(services: Services) {
       name: body.name ?? existing.name,
       baseUrl: body.baseUrl ?? existing.baseUrl,
       enabled: body.enabled ?? existing.enabled,
+      // Carried as sent rather than defaulted to the stored value: the store
+      // keeps the old style on `undefined` and clears it on an explicit null,
+      // which is how a provider goes back to bearer.
+      auth: body.auth,
     });
     if (typeof body.apiKey === "string") vault.set(SECRET.provider(id), body.apiKey);
     services.reload();
@@ -216,7 +220,11 @@ export function settingsRoutes(services: Services) {
 
   app.post("/mcp/servers", async (context) => {
     const body = await readJson<McpServer>(context);
-    if (!body.title || !body.command) return fail(context, 400, "invalid", "title and command are required");
+    // A record is stdio or remote depending on which of the two it carries, so
+    // demanding a command would make a remote server unrepresentable.
+    if (!body.title || (!body.command && !body.url)) {
+      return fail(context, 400, "invalid", "title and one of command or url are required");
+    }
     const id = body.id ? slug(body.id) : slug(body.title);
     if (store.listMcpServers().some((server) => server.id === id)) {
       return fail(context, 409, "conflict", `MCP server ${id} already exists`);
@@ -225,9 +233,11 @@ export function settingsRoutes(services: Services) {
       id,
       title: body.title,
       enabled: body.enabled !== false,
-      command: body.command,
+      command: body.command ?? "",
+      url: body.url,
       args: Array.isArray(body.args) ? body.args.map(String) : [],
       env: body.env && typeof body.env === "object" ? body.env : {},
+      headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
     });
     await mcp.connect();
     return context.json(server, 201);
@@ -242,9 +252,13 @@ export function settingsRoutes(services: Services) {
       id,
       title: body.title ?? existing.title,
       enabled: body.enabled ?? existing.enabled,
+      // An empty string is how the client switches sides — it clears the half
+      // that no longer applies — so only an absent field falls back.
       command: body.command ?? existing.command,
+      url: body.url ?? existing.url,
       args: Array.isArray(body.args) ? body.args.map(String) : existing.args,
       env: body.env && typeof body.env === "object" ? body.env : existing.env,
+      headers: body.headers && typeof body.headers === "object" ? body.headers : existing.headers,
     });
     await mcp.connect();
     return context.json({ items: store.listMcpServers(), status: mcp.status() });

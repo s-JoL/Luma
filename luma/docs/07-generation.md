@@ -212,6 +212,15 @@ degrades to "no knobs" rather than an error, because the schema is asked for on
 every studio listing and every agent turn, and a bad file should not take a
 screen down.
 
+The graphs Luma ships are copied into `data/workflows/` on boot and kept current
+after that, which installing them once was not: a graph revised in a new build
+never reached an existing install, so a new parameter block only appeared for
+whoever copied the files by hand. `data/` is still the user's, so a file is
+replaced only while its bytes are the ones recorded in `meta.workflow_hashes` at
+install time. Anything else is an edit — including a file predating the recording
+and so unprovable either way — and an edit is kept and named on stdout rather
+than silently overwritten.
+
 The submit/poll/fetch mechanics are carried over from the sidecar this replaced,
 including the parts that exist only because they were needed: `POST /prompt` with
 a client-generated `prompt_id`, up to four attempts with the Desktop jobs API

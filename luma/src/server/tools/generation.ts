@@ -157,7 +157,7 @@ export function generationTools(options: GenerationToolOptions): AgentTool[] {
     tools.push(
       tool(
         "generate_image",
-        `Create one new image with ${image.name}. Describe the picture; the backend chooses its own seed. Use edit_image when an existing image has to change.`,
+        `Create one new image with ${image.name}. Describe the picture; each call draws a fresh one unless you repeat a seed it offers. Use edit_image when an existing image has to change.`,
         schemaOf(image, "text_to_image"),
         image,
         "text_to_image",

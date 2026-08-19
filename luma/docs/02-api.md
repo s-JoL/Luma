@@ -357,8 +357,8 @@ call that was waiting for them no longer exists.
 
 ```
 GET   /v1/providers                       → Provider[]
-POST  /v1/providers                       { name, baseUrl, apiKey? } → Provider (201)
-PATCH /v1/providers/:id                   { name?, baseUrl?, enabled? }
+POST  /v1/providers                       { name, baseUrl, apiKey?, auth? } → Provider (201)
+PATCH /v1/providers/:id                   { name?, baseUrl?, enabled?, auth? }
 DELETE /v1/providers/:id                  → 204   -- also drops its models and key
 PUT   /v1/providers/:id/key               { value }  → 204   -- write-only
 DELETE /v1/providers/:id/key              → 204
@@ -383,8 +383,8 @@ PUT   /v1/capabilities/secrets/:name      { value } → Capabilities
 DELETE /v1/capabilities/secrets/:name     → Capabilities
 
 GET   /v1/mcp/servers                     → { items: McpServer[], status: McpStatus[] }
-POST  /v1/mcp/servers                     → McpServer (201)
-PATCH /v1/mcp/servers/:id                 → { items: McpServer[], status: McpStatus[] }
+POST  /v1/mcp/servers                     { title, command?, args?, env?, url?, headers? } → McpServer (201)
+PATCH /v1/mcp/servers/:id                 same fields, all optional → { items, status }
 DELETE /v1/mcp/servers/:id                → 204
 POST  /v1/mcp/reconnect                   → { status: McpStatus[] }
 
@@ -449,6 +449,18 @@ renders change as a side effect of the write, and returning them closes that gap
 in the same round trip. `PATCH /mcp/servers/:id` returns `{ items, status }` for
 the same reason — an edit triggers a reconnect, and the status is the only place
 a failed launch shows up.
+
+A provider's `auth` says how its credential is presented: absent or null is
+`Authorization: Bearer`, `{"style":"header","header":"x-api-key","prefix":""}`
+puts it in a header of your choosing, and `{"style":"none"}` sends none at all,
+which is what a self-hosted Ollama, llama.cpp or vLLM wants. On a `PATCH` the
+field is carried as sent — omitting it keeps the stored style, and an explicit
+null is how a provider goes back to bearer.
+
+An MCP record is a subprocess or a remote server depending on which of `command`
+and `url` it carries, and one of the two is required. Sending the other as an
+empty string is how a record changes sides; header values go through the same
+`${VAR}` expansion as `env`.
 
 ## Files
 
