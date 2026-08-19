@@ -33,6 +33,11 @@ Examples:
 - "de" for Germany
 - "in" for India`;
 
+export const READ_PAGES_DESCRIPTION = `How many of the top results to open and read in full, 0 to 5. Defaults to 0, which reads only the snippets.
+A snippet says whether a page is relevant; it does not carry the argument, the numbers, or the exact wording.
+Raise this when the answer depends on what a page actually says — a specification, a changelog, a court filing, a benchmark table, a quote you intend to reproduce.
+Leave it at 0 when the snippets already settle the question, such as a date, a name, or which of two things exists.`;
+
 export const WEB_SEARCH_DESCRIPTION = `Real-time search. Results have required citation anchors.
 
 Note: Use ONCE per reply unless instructed otherwise.

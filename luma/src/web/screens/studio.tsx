@@ -8,19 +8,19 @@
  * that takes two minutes survives a reload and a phone locking its screen. MCP
  * tools have no job of their own and are still run inline.
  */
-import { Download, ImagePlus, Layers, Menu as MenuIcon, Pencil, Plus, X } from "lucide-react";
+import { ChevronDown, Clock, Download, ImagePlus, Layers, Menu as MenuIcon, Pencil, Plus, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { GeneratedAsset, JobRecord, JsonSchema, StudioImage, StudioTool } from "@shared/types.ts";
 import { api, watchJob } from "../api.ts";
+import { askToNotify, notifyFinished } from "../notify.ts";
+import { assetIdOf, ProvenanceCard } from "../provenance.tsx";
+import { onStudioDraft, takeStudioDraft, type StudioDraft } from "../studio-draft.ts";
 import {
   ACTIVE_JOB_STATUSES,
-  Badge,
   Button,
   cn,
   Field,
   formatDuration,
-  formatTime,
-  ImageThumb,
   Input,
   JobCard,
   Lightbox,
@@ -34,19 +34,31 @@ import {
 } from "../ui.tsx";
 
 const PAGE = 60;
-const KIND_LABEL: Record<StudioTool["kind"], string> = {
-  generate: "生成",
-  edit: "编辑",
-  video: "视频",
-  other: "其他",
-};
-
 /** Fields the studio renders itself instead of as a generic input. */
 const PROMPT_FIELDS = new Set(["prompt", "negative_prompt"]);
 const SOURCE_FIELD = "source_image_id";
 const EXTRA_SOURCES_FIELD = "additional_source_image_ids";
 /** Bookkeeping the agent fills in for itself; meaningless when driving by hand. */
 const HIDDEN_FIELDS = new Set(["placement_key", "intent"]);
+
+/**
+ * The operations, as tabs, in the order someone works in: draw something, change
+ * it, then move it. `other` is here only because the type allows it; the server
+ * does not send those to the studio.
+ */
+const KIND_ORDER: Array<StudioTool["kind"]> = ["generate", "edit", "video"];
+const KIND_LABELS: Record<StudioTool["kind"], string> = {
+  generate: "生成图片",
+  edit: "编辑图片",
+  video: "视频",
+  other: "其他",
+};
+const KIND_ACTIONS: Record<StudioTool["kind"], string> = {
+  generate: "开始生成",
+  edit: "开始编辑",
+  video: "开始生成视频",
+  other: "运行",
+};
 
 const FIELD_LABELS: Record<string, string> = {
   aspect_ratio: "画面比例",
@@ -87,6 +99,13 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
+  /**
+   * Finished work, kept only to answer "how long will this take". The queue above
+   * is what is happening; this is what has happened, and the two are separate
+   * because listing every finished job in the queue buried the gallery.
+   */
+  const [past, setPast] = useState<JobRecord[]>([]);
+  const [queueOpen, setQueueOpen] = useState(false);
   const [zoom, setZoom] = useState("");
   const [detail, setDetail] = useState<StudioImage | null>(null);
   const [picking, setPicking] = useState<"" | "source" | "extra">("");
@@ -137,15 +156,17 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
         // already in the gallery below, or — for video, which the gallery does
         // not carry — in the file library, so listing it again would bury the
         // gallery under a history nobody asked for.
-        const [catalogue, queued, running] = await Promise.all([
+        const [catalogue, queued, running, done] = await Promise.all([
           api.studioTools(),
           api.jobs({ status: "queued", limit: 12 }),
           api.jobs({ status: "running", limit: 12 }),
+          api.jobs({ status: "succeeded", limit: 60 }),
           loadGallery(0),
         ]);
         setTools(catalogue.items);
         setEnabled(catalogue.enabled);
         setJobs([...running.items, ...queued.items]);
+        setPast(done.items);
         setToolKey(
           (current) =>
             current || (catalogue.items[0] ? `${catalogue.items[0].serverId}/${catalogue.items[0].name}` : ""),
@@ -191,7 +212,17 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
         job.id,
         (update) => {
           upsertJob(update);
-          if (update.status === "succeeded") absorb(update);
+          if (update.status === "succeeded") {
+            absorb(update);
+            // The estimate for the next one should know about this one.
+            setPast((current) => [update, ...current.filter((item) => item.id !== update.id)].slice(0, 60));
+          }
+          if (!ACTIVE_JOB_STATUSES.has(update.status)) {
+            notifyFinished(
+              update.status === "succeeded" ? "生成完成" : "生成未完成",
+              update.error || `${update.modelName} · ${update.op}`,
+            );
+          }
         },
         controller.signal,
       ).finally(() => watchers.current.delete(job.id));
@@ -218,7 +249,101 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
     setValues(defaultsOf(tool.schema));
   }, [tool, toolKey]);
 
-  const fields = useMemo(() => Object.entries(tool?.schema.properties ?? {}), [tool]);
+  /**
+   * The operations there is anything to run, in a fixed order so the tabs do not
+   * rearrange themselves when a model is enabled. A kind nobody can perform is
+   * not shown at all: a tab that only ever says "no model for this" is furniture.
+   */
+  const kinds = useMemo(() => KIND_ORDER.filter((entry) => tools.some((item) => item.kind === entry)), [tools]);
+  const kindTools = useMemo(() => tools.filter((item) => item.kind === tool?.kind), [tool?.kind, tools]);
+
+  /**
+   * Which model you last used for each operation. Switching to editing and back
+   * should return you to the model you were drawing with, not to whichever one
+   * happens to sort first.
+   */
+  const lastByKind = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (tool) lastByKind.current[tool.kind] = toolKey;
+  }, [tool, toolKey]);
+
+  const switchKind = (next: StudioTool["kind"]) => {
+    const remembered = lastByKind.current[next];
+    const fallback = tools.find((item) => item.kind === next);
+    setToolKey(remembered ?? (fallback ? `${fallback.serverId}/${fallback.name}` : ""));
+  };
+
+  /**
+   * How long this operation has taken on this model before, as the median of what
+   * is on record. The median and not the mean: a cold start that pulled twelve
+   * gigabytes of weights off disk is in there too, and one of those drags an
+   * average past anything the reader is going to see.
+   */
+  const estimate = useMemo(() => {
+    if (!tool?.modelId || !tool.op) return null;
+    const runs = past
+      .filter((job) => job.modelId === tool.modelId && job.op === tool.op && job.startedAt && job.finishedAt)
+      .map((job) => job.finishedAt! - job.startedAt!)
+      .sort((left, right) => left - right);
+    if (!runs.length) return null;
+    return { ms: runs[Math.floor(runs.length / 2)]!, samples: runs.length };
+  }, [past, tool]);
+
+  /**
+   * A generation handed over from somewhere else — the provenance card in a
+   * transcript, or a tile in this gallery. The parameters have already been chosen
+   * once, so the form is filled from them instead of asking the reader to retype
+   * the numbers they were just looking at.
+   */
+  const [draft, setDraft] = useState<StudioDraft | null>(() => takeStudioDraft() ?? null);
+  useEffect(() => onStudioDraft(() => setDraft(takeStudioDraft() ?? null)), []);
+  useEffect(() => {
+    if (!draft || !tools.length) return;
+    setDraft(null);
+    const target = tools.find((item) => item.modelId === draft.modelId && item.op === draft.op);
+    if (!target) {
+      toast("生成它的模型已经不在了，参数没法照原样打开", true);
+      return;
+    }
+    const key = `${target.serverId}/${target.name}`;
+    // Claimed before the switch, or the reset-on-tool-change effect wipes this.
+    seeded.current = key;
+    setToolKey(key);
+    const [first, ...rest] = draft.sources ?? [];
+    setValues({
+      ...defaultsOf(target.schema),
+      ...draft.params,
+      ...(first ? { [SOURCE_FIELD]: first } : {}),
+      ...(rest.length ? { [EXTRA_SOURCES_FIELD]: rest } : {}),
+    });
+  }, [draft, toast, tools]);
+
+  /**
+   * The controls that are not rendered somewhere of their own, split the way the
+   * schema declares them: a parameter the model also chooses stays in front of
+   * you, and one that is the person's alone — the sampler its author tuned, exact
+   * pixels, a seed worth pinning — folds away until it is wanted.
+   */
+  const controls = useMemo(
+    () =>
+      Object.entries(tool?.schema.properties ?? {}).filter(
+        ([key]) =>
+          !PROMPT_FIELDS.has(key) && !HIDDEN_FIELDS.has(key) && key !== SOURCE_FIELD && key !== EXTRA_SOURCES_FIELD,
+      ),
+    [tool],
+  );
+  const shared = controls.filter(([, schema]) => schema.audience !== "studio");
+  const manual = controls.filter(([, schema]) => schema.audience === "studio");
+  /** Either group renders an entry the same way; only where they sit differs. */
+  const control = ([key, schema]: [string, JsonSchema]) => (
+    <SchemaField
+      key={key}
+      name={key}
+      schema={schema}
+      value={values[key]}
+      onChange={(value) => setValues((current) => ({ ...current, [key]: value }))}
+    />
+  );
   const required = new Set(tool?.schema.required ?? []);
   const promptValue = String(values.prompt ?? "");
   const negativeSchema = tool?.schema.properties?.negative_prompt;
@@ -228,6 +353,8 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
   const run = async () => {
     if (!tool) return;
     setBusy(true);
+    // The click that starts a render is the gesture the permission prompt needs.
+    askToNotify();
     try {
       // A generation model has a job; an MCP tool is just a call.
       if (tool.modelId) {
@@ -245,6 +372,8 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           sources,
         });
         upsertJob(job);
+        // Opened once, so the work is visibly somewhere; closing it stays closed.
+        setQueueOpen(true);
         return;
       }
       const result = await api.studioRun(tool.serverId, tool.name, prune(values));
@@ -278,6 +407,31 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
     }
   };
 
+  /**
+   * A file dropped on a source slot. An upload gets an `img_` id and an asset row
+   * of its own, so from here on it is indistinguishable from something generated —
+   * which is what lets it be edited at all.
+   */
+  const uploadSource = async (file: File, slot: "source" | "extra") => {
+    if (!file.type.startsWith("image/")) {
+      toast("只有图片能当源图", true);
+      return;
+    }
+    try {
+      const record = await api.upload(file);
+      setValues((current) =>
+        slot === "extra"
+          ? {
+              ...current,
+              [EXTRA_SOURCES_FIELD]: [...((current[EXTRA_SOURCES_FIELD] as string[] | undefined) ?? []), record.id],
+            }
+          : { ...current, [SOURCE_FIELD]: record.id },
+      );
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), true);
+    }
+  };
+
   const useAsSource = (imageId: string) => {
     const editTool =
       tool?.kind === "edit"
@@ -306,11 +460,20 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
         <MenuIcon />
       </Button>
       <h1 className="flex-1 text-sm font-medium md:text-base">创作台</h1>
-      {active.length ? (
-        <Badge tone="accent">
-          <Spinner className="size-3" />
-          {active.length} 个进行中
-        </Badge>
+      {/* The queue used to take the top half of the canvas and keep it whether
+          anything was running or not. It lives behind this instead, so the space
+          belongs to the results. */}
+      {jobs.length ? (
+        <Button
+          variant={queueOpen ? "secondary" : "ghost"}
+          size="sm"
+          aria-expanded={queueOpen}
+          onClick={() => setQueueOpen((open) => !open)}
+        >
+          {active.length ? <Spinner className="size-3" /> : <Layers className="size-3.5" />}
+          {active.length ? `${active.length} 个进行中` : `${jobs.length} 条记录`}
+          <ChevronDown className={cn("size-3.5 transition-transform", queueOpen && "rotate-180")} />
+        </Button>
       ) : null}
       <span className="text-xs text-muted-foreground">{total} 张作品</span>
     </header>
@@ -330,27 +493,81 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
   return (
     <>
       {header}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        {queueOpen && jobs.length ? (
+          <div className="absolute inset-x-2 top-2 z-20 flex max-h-[70%] flex-col gap-2 overflow-y-auto rounded-xl border bg-card p-3 shadow-2xl md:inset-x-auto md:right-3 md:w-96">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Layers className="size-3.5" />
+              <span className="flex-1">生成队列</span>
+              <Button variant="ghost" size="icon-sm" aria-label="收起队列" onClick={() => setQueueOpen(false)}>
+                <X />
+              </Button>
+            </div>
+            {jobs.map((job) => (
+              <JobCard
+                key={job.id}
+                job={job}
+                onZoom={setZoom}
+                onCancel={async () => {
+                  const cancelled = await api.cancelJob(job.id).catch((error: unknown) => {
+                    toast(error instanceof Error ? error.message : String(error), true);
+                    return null;
+                  });
+                  if (cancelled) upsertJob(cancelled);
+                }}
+              />
+            ))}
+          </div>
+        ) : null}
+
         <div className="flex shrink-0 flex-col gap-4 border-b p-4 md:w-84 md:overflow-y-auto md:border-r md:border-b-0">
-          <Field label="工具" hint={tool?.description}>
+          {/* What you are doing comes before what does it. The dropdown that used
+              to sit here mixed the two, so choosing to edit meant reading a list
+              of every model crossed with every operation. */}
+          {kinds.length > 1 ? (
+            <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="创作方式">
+              {kinds.map((entry) => (
+                <button
+                  key={entry}
+                  role="tab"
+                  aria-selected={tool?.kind === entry}
+                  className={cn(
+                    "flex-1 rounded-md px-2 py-1.5 text-sm font-medium transition-colors",
+                    tool?.kind === entry
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => switchKind(entry)}
+                >
+                  {KIND_LABELS[entry]}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <Field label="模型" hint={tool ? summarize(tool) : undefined}>
             <Select
               value={toolKey}
-              placeholder="没有可用工具"
-              options={tools.map((item) => ({
+              placeholder="没有可用模型"
+              options={kindTools.map((item) => ({
                 value: `${item.serverId}/${item.name}`,
-                label: `${item.serverTitle} · ${KIND_LABEL[item.kind]}`,
-                hint: item.modelId ? "生成模型" : "MCP 工具",
+                label: item.serverTitle,
+                hint: summarize(item),
               }))}
               onChange={setToolKey}
             />
           </Field>
 
+          {/* The source image comes before the prompt for an edit, because it is
+              the subject: the prompt only says what to do to it. */}
           {tool?.schema.properties?.[SOURCE_FIELD] ? (
             <Field label="源图">
               <SourcePicker
                 ids={[String(values[SOURCE_FIELD] ?? "")].filter(Boolean)}
                 onPick={() => setPicking("source")}
                 onClear={() => setValues((current) => ({ ...current, [SOURCE_FIELD]: "" }))}
+                onDropped={(id) => setValues((current) => ({ ...current, [SOURCE_FIELD]: id }))}
+                onUpload={(file) => uploadSource(file, "source")}
               />
             </Field>
           ) : null}
@@ -366,6 +583,13 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
                     [EXTRA_SOURCES_FIELD]: [],
                   }))
                 }
+                onDropped={(id) =>
+                  setValues((current) => ({
+                    ...current,
+                    [EXTRA_SOURCES_FIELD]: [...((current[EXTRA_SOURCES_FIELD] as string[] | undefined) ?? []), id],
+                  }))
+                }
+                onUpload={(file) => uploadSource(file, "extra")}
               />
             </Field>
           ) : null}
@@ -408,58 +632,37 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
             </Field>
           ) : null}
 
-          <div className="flex flex-col gap-3">
-            {fields
-              .filter(
-                ([key]) =>
-                  !PROMPT_FIELDS.has(key) &&
-                  !HIDDEN_FIELDS.has(key) &&
-                  key !== SOURCE_FIELD &&
-                  key !== EXTRA_SOURCES_FIELD,
-              )
-              .map(([key, schema]) => (
-                <SchemaField
-                  key={key}
-                  name={key}
-                  schema={schema}
-                  value={values[key]}
-                  onChange={(value) => setValues((current) => ({ ...current, [key]: value }))}
-                />
-              ))}
-          </div>
+          {shared.length ? <div className="flex flex-col gap-3">{shared.map(control)}</div> : null}
+
+          {manual.length ? (
+            <details className="group/manual rounded-lg border bg-muted/30">
+              <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm select-none">
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open/manual:rotate-180" />
+                <span className="flex-1">高级</span>
+                <span className="text-xs text-muted-foreground">{manual.length} 项 · 仅手动</span>
+              </summary>
+              <div className="flex flex-col gap-3 border-t px-3 py-3">{manual.map(control)}</div>
+            </details>
+          ) : null}
 
           <Button variant="primary" size="lg" disabled={!canRun} onClick={() => void run()}>
             {busy ? <Spinner /> : <ImagePlus />}
-            {tool?.kind === "edit" ? "开始编辑" : tool?.kind === "video" ? "开始生成视频" : "开始生成"}
+            {KIND_ACTIONS[tool?.kind ?? "generate"]}
           </Button>
+
+          {/* What the wait was last time, from this queue's own record of it.
+              Nothing here is a guess about a backend nobody has run yet. */}
+          {estimate ? (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Clock className="size-3.5 shrink-0" />
+              过去 {estimate.samples} 次里，一半在 {formatDuration(estimate.ms)} 内完成
+            </p>
+          ) : null}
 
           {video ? <VideoView className="w-full" videoId={video} /> : null}
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col md:overflow-y-auto">
-          {jobs.length ? (
-            <div className="flex max-h-[55%] shrink-0 flex-col gap-2 overflow-y-auto border-b p-3">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                <Layers className="size-3.5" />
-                生成队列
-              </div>
-              {jobs.map((job) => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  onZoom={setZoom}
-                  onCancel={async () => {
-                    const cancelled = await api.cancelJob(job.id).catch((error: unknown) => {
-                      toast(error instanceof Error ? error.message : String(error), true);
-                      return null;
-                    });
-                    if (cancelled) upsertJob(cancelled);
-                  }}
-                />
-              ))}
-            </div>
-          ) : null}
-
           <div
             className="grid flex-1 auto-rows-[8px] grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] content-start gap-2 p-3"
             ref={galleryRef}
@@ -471,39 +674,57 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
                     const stored = image.width && image.height ? image.width / image.height : 0;
                     const ratio = stored || measured[image.id] || 1;
                     return (
-                      <button
+                      <div
                         key={image.id}
-                        aria-label={`打开作品 ${artworkName(image)}`}
-                        className="overflow-hidden rounded-lg border bg-muted transition-[transform,box-shadow] hover:z-1 hover:shadow-lg"
+                        className="group relative overflow-hidden rounded-lg border bg-muted transition-[transform,box-shadow] hover:z-1 hover:shadow-lg"
                         style={{
                           gridRowEnd: `span ${rowSpan(metrics, ratio)}`,
                         }}
-                        onClick={() => setDetail(image)}
+                        // Dragged onto the source slot, which is the shortest path
+                        // from "that one" to editing it.
+                        draggable
+                        onDragStart={(event) => event.dataTransfer.setData("text/plain", image.id)}
                       >
-                        <img
-                          className="size-full object-cover"
-                          src={`/v1/images/${image.id}?w=320`}
-                          alt=""
-                          loading="lazy"
-                          decoding="async"
-                          onLoad={(event) => {
-                            // Images migrated before dimensions were recorded
-                            // fall back to a square, then correct themselves.
-                            if (stored) return;
-                            const { naturalWidth, naturalHeight } = event.currentTarget;
-                            if (!naturalWidth || !naturalHeight) return;
-                            setMeasured((current) =>
-                              current[image.id]
-                                ? current
-                                : {
-                                    ...current,
-                                    [image.id]: naturalWidth / naturalHeight,
-                                  },
-                            );
-                          }}
-                          onError={() => setMissing((current) => new Set(current).add(image.id))}
-                        />
-                      </button>
+                        <button
+                          aria-label={`打开作品 ${artworkName(image)}`}
+                          className="block size-full"
+                          onClick={() => setDetail(image)}
+                        >
+                          <img
+                            className="size-full object-cover"
+                            src={`/v1/images/${image.id}?w=320`}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            onLoad={(event) => {
+                              // Images migrated before dimensions were recorded
+                              // fall back to a square, then correct themselves.
+                              if (stored) return;
+                              const { naturalWidth, naturalHeight } = event.currentTarget;
+                              if (!naturalWidth || !naturalHeight) return;
+                              setMeasured((current) =>
+                                current[image.id]
+                                  ? current
+                                  : {
+                                      ...current,
+                                      [image.id]: naturalWidth / naturalHeight,
+                                    },
+                              );
+                            }}
+                            onError={() => setMissing((current) => new Set(current).add(image.id))}
+                          />
+                        </button>
+                        {/* Editing was two clicks and a modal away from the thing
+                            you wanted to edit. Always visible without a pointer,
+                            because hover is not a gesture a phone has. */}
+                        <button
+                          className="absolute top-1 right-1 rounded-md bg-background/85 p-1.5 opacity-0 shadow transition-opacity group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+                          aria-label={`以 ${artworkName(image)} 为源编辑`}
+                          onClick={() => useAsSource(image.id)}
+                        >
+                          <Pencil className="size-3.5" />
+                        </button>
+                      </div>
                     );
                   })
               : null}
@@ -546,43 +767,19 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           ) : null
         }
       >
+        {/* The picture beside where it came from. This used to re-list the
+            backend, the size and the parents by hand, which was a worse subset of
+            what `/provenance` answers and had no prompt in it — the one thing you
+            open a finished picture to read. */}
         {detail ? (
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start">
             <img
-              className="max-h-[60dvh] w-full cursor-zoom-in rounded-lg border object-contain"
+              className="max-h-[60dvh] min-w-0 flex-1 cursor-zoom-in rounded-lg border object-contain"
               src={`/v1/images/${detail.id}?w=1280`}
               alt=""
               onClick={() => setZoom(`/v1/images/${detail.id}`)}
             />
-            <p className="truncate text-sm font-medium">{artworkName(detail)}</p>
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              {detail.provider ? <Badge tone="outline">{detail.provider}</Badge> : null}
-              {detail.model ? <Badge tone="outline">{detail.model}</Badge> : null}
-              {detail.width ? (
-                <Badge tone="outline">
-                  {detail.width}×{detail.height}
-                </Badge>
-              ) : null}
-              <span className="text-muted-foreground">{formatTime(detail.createdAt)}</span>
-              <span className="ml-auto font-mono text-muted-foreground">{detail.id}</span>
-            </div>
-            {/* Where an edit came from. Absent on anything drawn from nothing,
-                and on a payload written before lineage was recorded. */}
-            {detail.parents?.length ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-muted-foreground">派生自</span>
-                {detail.parents.map((parentId) => (
-                  <ImageThumb
-                    key={parentId}
-                    className="size-14 cursor-zoom-in"
-                    imageId={parentId}
-                    width={160}
-                    label={`查看来源图 ${parentId}`}
-                    onOpen={() => setZoom(`/v1/images/${parentId}`)}
-                  />
-                ))}
-              </div>
-            ) : null}
+            <ProvenanceCard assetId={detail.id} />
           </div>
         ) : null}
       </Modal>
@@ -603,7 +800,13 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
         />
       ) : null}
 
-      {zoom ? <Lightbox src={zoom} onClose={() => setZoom("")} /> : null}
+      {zoom ? (
+        <Lightbox
+          src={zoom}
+          onClose={() => setZoom("")}
+          aside={assetIdOf(zoom) ? <ProvenanceCard assetId={assetIdOf(zoom)} /> : undefined}
+        />
+      ) : null}
     </>
   );
 }
@@ -642,26 +845,82 @@ function galleryEntry(asset: GeneratedAsset, job: JobRecord): StudioImage {
   };
 }
 
-function SourcePicker({ ids, onPick, onClear }: { ids: string[]; onPick: () => void; onClear: () => void }) {
+/**
+ * The picture being worked on. Empty, it is a drop target rather than a button
+ * that opens a picker: what people have is a file on their desk or a tile in the
+ * gallery beside them, and both of those are things you drag.
+ */
+function SourcePicker({
+  ids,
+  onPick,
+  onClear,
+  onDropped,
+  onUpload,
+}: {
+  ids: string[];
+  onPick: () => void;
+  onClear: () => void;
+  /** An image already in the library, dragged from the gallery. */
+  onDropped: (imageId: string) => void;
+  onUpload: (file: File) => void | Promise<void>;
+}) {
+  const [over, setOver] = useState(false);
+
+  const accept = (event: React.DragEvent) => {
+    event.preventDefault();
+    setOver(false);
+    const file = event.dataTransfer.files[0];
+    if (file) {
+      void onUpload(file);
+      return;
+    }
+    // A gallery tile carries its own id, so no upload and no second copy.
+    const dragged = event.dataTransfer.getData("text/plain").trim();
+    if (/^img_[0-9a-f]{32}$/i.test(dragged)) onDropped(dragged.toLowerCase());
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {ids.map((id) => (
-        <img
-          key={id}
-          className="size-14 rounded-md border bg-muted object-contain"
-          src={`/v1/images/${id}?w=160`}
-          alt=""
-          loading="lazy"
-        />
-      ))}
-      <Button size="sm" onClick={onPick}>
-        {ids.length ? "更换" : "选择"}
-      </Button>
+    <div
+      className="flex flex-col gap-2"
+      onDragOver={(event) => {
+        event.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={accept}
+    >
       {ids.length ? (
-        <Button size="sm" variant="ghost" className="text-destructive" onClick={onClear}>
-          清除
-        </Button>
-      ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {ids.map((id) => (
+            <img
+              key={id}
+              className="size-14 rounded-md border bg-muted object-contain"
+              src={`/v1/images/${id}?w=160`}
+              alt=""
+              loading="lazy"
+            />
+          ))}
+          <Button size="sm" onClick={onPick}>
+            更换
+          </Button>
+          <Button size="sm" variant="ghost" className="text-destructive" onClick={onClear}>
+            清除
+          </Button>
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "flex flex-col items-center gap-2 rounded-lg border border-dashed p-4 text-center transition-colors",
+            over && "border-primary bg-accent/40",
+          )}
+        >
+          <Upload className="size-4 text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">把图片拖进来，或从右边画廊里拖一块过来</p>
+          <Button size="sm" onClick={onPick}>
+            从画廊选择
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1031,13 +1290,52 @@ function JsonField({
 
 const serialize = (value: unknown) => (value === undefined ? "" : JSON.stringify(value, null, 2));
 
-/** Description plus whatever the schema itself bounds, so a limit is visible. */
+/**
+ * What a backend can do, read off the schema it already sends. Deliberately not a
+ * table of model names in this file: a workflow that gains a resolution or a video
+ * model that gains a duration says so in its schema, and this line says it in the
+ * same moment rather than the next time somebody remembers to edit it.
+ *
+ * Local against hosted comes first because it is the one thing the schema cannot
+ * say and the reader most wants before committing to a wait: slow and free, or
+ * quick and billed.
+ */
+function summarize(tool: StudioTool) {
+  const properties = tool.schema.properties ?? {};
+  const choices = (schema: JsonSchema | undefined, unit = "") => {
+    const values = schema ? enumOf(schema) : [];
+    if (!values.length) return "";
+    return `${values.slice(0, 4).map(String).join("/")}${values.length > 4 ? "…" : ""}${unit}`;
+  };
+  const references = properties[EXTRA_SOURCES_FIELD];
+  return [
+    tool.modelId ? (tool.local ? "本地" : "托管") : "MCP 工具",
+    choices(properties.aspect_ratio),
+    choices(properties.resolution ?? properties.size),
+    choices(properties.duration ?? properties.duration_seconds, " 秒"),
+    references ? `可带 ${references.maxItems ?? "多"} 张参考图` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * What a control is bounded by, and an explanation only where one is needed.
+ *
+ * A generation schema's `description` is addressed to the model: English,
+ * imperative, and about how to compose a call — "Copy an exact image_id from the
+ * conversation". Its `title` is the same knob addressed to a person. So a field
+ * with a title has already said its piece, and printing the model's copy beneath
+ * it puts instructions for somebody else in front of the reader. An MCP tool
+ * often has only a description, and there it is all there is to go on.
+ */
 function describe(schema: JsonSchema) {
   const range =
     schema.minimum == null && schema.maximum == null
       ? ""
       : `范围 ${schema.minimum ?? "不限"} – ${schema.maximum ?? "不限"}`;
-  return [schema.description, range].filter((part) => Boolean(part)).join(" · ") || undefined;
+  const explanation = schema.title ? "" : schema.description;
+  return [explanation, range].filter((part) => Boolean(part)).join(" · ") || undefined;
 }
 
 /** `multipleOf` is the JSON Schema spelling of a step; an integer implies one. */

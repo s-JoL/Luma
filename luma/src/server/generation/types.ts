@@ -1,6 +1,6 @@
 /**
  * One interface for everything that produces pixels or frames
- * (`07-generation.md`). An adapter answers what a model can do, what parameters
+ * (`08-generation.md`). An adapter answers what a model can do, what parameters
  * it takes, and then does the work.
  */
 import type { GenerationOp, JsonSchema, ModelSpec, Provider } from "@shared/types.ts";

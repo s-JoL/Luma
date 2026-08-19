@@ -41,7 +41,7 @@ export const paths = {
   skills: path.join(DATA_DIR, "skills"),
   /**
    * ComfyUI graphs in API format. A new workflow is a file plus a model row, so
-   * adding one is not a release (`07-generation.md`).
+   * adding one is not a release (`08-generation.md`).
    */
   workflows: path.join(DATA_DIR, "workflows"),
   assets: path.join(DATA_DIR, "assets"),
@@ -61,7 +61,7 @@ export const MAX_ATTACHMENTS = Number(process.env.LUMA_MAX_ATTACHMENTS ?? 8);
  * Ceiling on the resident copy of the vector matrix. A larger corpus is scored
  * straight out of SQLite in pages instead, trading the reads back rather than
  * the machine's memory. The default holds about 16 000 chunks at 4096
- * dimensions, which is already past the size where `01-data-model.md` points at
+ * dimensions, which is already past the size where `02-data-model.md` points at
  * `sqlite-vec`.
  */
 export const VECTOR_CACHE_BYTES = Number(

@@ -1214,7 +1214,7 @@ await check("search finds a message across conversations", async () => {
 
 await check("failures answer in the documented envelope", async () => {
   // A client shows `message` verbatim and branches on `code`, so a route that
-  // answers with a bare string or an empty body breaks it (`02-api.md
+  // answers with a bare string or an empty body breaks it (`03-api.md
   // §Conventions`).
   const cases: Array<[string, string, number, unknown?]> = [
     ["GET", "/conversations/conv_missing", 404],

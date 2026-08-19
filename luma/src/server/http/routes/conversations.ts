@@ -46,7 +46,7 @@ export function conversationRoutes(services: Services) {
     // A deleted profile must not pin a conversation to nothing.
     const profile = asked ? store.getProfile(asked) : undefined;
     // The profile names a chat model, so the order is: what the client asked
-    // for, the profile's, then the global default (`07-generation.md §Profiles`).
+    // for, the profile's, then the global default (`08-generation.md §Profiles`).
     const wanted = body.modelId || profile?.chatModelId || "";
     const modelId = wanted && store.getModel(wanted)?.enabled ? wanted : config.defaultModelId();
     if (!modelId) return fail(context, 422, "no_model", "Configure a model before starting a conversation");

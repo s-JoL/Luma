@@ -6,11 +6,12 @@ import { SECRET } from "../config.ts";
 import type { Config } from "../config.ts";
 import type { SecretVault } from "../crypto/secrets.ts";
 import { paths } from "../env.ts";
+import { isRunnable, supportsOp } from "../generation/index.ts";
 import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../prompts/defaults.ts";
 import { json } from "./db.ts";
 import type { Store } from "./store.ts";
 
-const SEED_VERSION = "4";
+const SEED_VERSION = "5";
 
 /** Providers dropped from the defaults; removed on upgrade unless customised. */
 const RETIRED_PROVIDERS = ["kie"];
@@ -204,13 +205,78 @@ const MODELS: ModelInput[] = [
     kind: "image",
     ops: ["text_to_image", "image_to_image"],
     apiMode: "openai-images",
+    /**
+     * Every value here was answered by the live API rather than read off a
+     * documentation table, because the two disagree. `/images/edits` works but
+     * takes one image; only the generations route with an `image` array composes
+     * the ten references this model advertises, so that is the shape a row that
+     * wants multi-reference editing has to ask for.
+     *
+     * The sizes are exact because a tier is a pixel budget, not a frame: `2K`
+     * returned 2496x1664 for one call and 1776x2368 for the next from the same
+     * prompt. On an edit the reference decides the aspect, which is what makes
+     * `auto` the right default there and an explicit pair the right one here.
+     */
+    params: {
+      editMode: "unified",
+      sourceField: "image",
+      sourceEncoding: "data-uri",
+      maxSources: 10,
+      sizes: [
+        "2048x2048",
+        "2736x1536",
+        "1536x2736",
+        "2368x1776",
+        "1776x2368",
+        "2496x1664",
+        "1664x2496",
+        "3136x1344",
+        "2K",
+        "1K",
+      ],
+      // The output arrived watermarked until this was sent explicitly, whatever
+      // the route's documented default claims.
+      extra: { output_format: "png", watermark: false },
+    },
+  },
+  {
+    ...GENERATION_DEFAULTS,
+    id: "cometapi:seedance-2-5",
+    name: "Seedance 2.5 · CometAPI",
+    providerId: "cometapi",
+    // `/v1/models` lists `seedance-2-5`. The documentation's
+    // `seedance-2-5-260628` answers 503 model_not_found, so the live catalogue
+    // wins over the table.
+    model: "seedance-2-5",
+    kind: "video",
+    ops: ["text_to_video", "image_to_video"],
+    apiMode: "openai-videos",
+    params: {
+      // Documented as multipart-only, and it carries reference frames as files
+      // rather than as data URIs.
+      submitFormat: "multipart",
+      sourceField: "input_reference",
+      maxSources: 1,
+      durations: [4, 5, 6, 8, 10, 12, 15, 20, 25, 30],
+      // 2.5 serves 480p and 720p only; the exact pairs are the documented ones.
+      sizes: [
+        "1280x720",
+        "720x1280",
+        "960x960",
+        "1112x834",
+        "834x1112",
+        "1470x630",
+        "854x480",
+        "480x854",
+      ],
+    },
   },
 ];
 
 /**
  * MCP servers that shipped as defaults and no longer do. The five image sidecars
  * are gone because the generation layer runs the same ComfyUI graphs and the same
- * Venice calls in process (`07-generation.md`); leaving them installed gave the
+ * Venice calls in process (`08-generation.md`); leaving them installed gave the
  * model two ways to draw and a coin flip between them.
  */
 const RETIRED_MCP = [
@@ -247,15 +313,30 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
     if (store.getProvider(id)) store.deleteProvider(id);
   }
   for (const id of RETIRED_MCP) store.deleteMcpServer(id);
+  const adopted: string[] = [];
   for (const [index, provider] of PROVIDERS.entries()) {
     if (store.getProvider(provider.id)) continue;
     store.upsertProvider({ ...provider, enabled: true });
     store.db.run("UPDATE providers SET sort_order = ? WHERE id = ?", index, provider.id);
   }
   for (const [index, model] of MODELS.entries()) {
-    if (store.getModel(model.id)) continue;
-    store.upsertModel({ ...model, sortOrder: index });
+    const existing = store.getModel(model.id);
+    if (!existing) {
+      store.upsertModel({ ...model, sortOrder: index });
+      continue;
+    }
+    // A shipped row that gained parameters has to reach the installs that
+    // already have it, or a protocol fix only helps whoever installs next. The
+    // same rule the workflow files use applies: adopt them only where there is
+    // nothing to overwrite. A row with no parameters at all was never configured
+    // by anyone, and one that has some is the user's.
+    if (model.params && Object.keys(model.params).length && !Object.keys(existing.params ?? {}).length) {
+      store.upsertModel({ ...existing, params: model.params });
+      adopted.push(model.id);
+    }
   }
+  if (adopted.length) console.log(`[seed] adopted shipped parameters for ${adopted.join(", ")}`);
+  seedDefaultProfile(store, config);
   const prompts = config.prompts();
   config.savePrompts({
     globalPrompt: prompts.globalPrompt || DEFAULT_GLOBAL_PROMPT,
@@ -272,6 +353,50 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
   }
   store.setMeta("seed_version", SEED_VERSION);
   return true;
+}
+
+/**
+ * One profile, naming which model is behind each of the agent's three generation
+ * tools.
+ *
+ * Without it the tools are bound by falling back to the first enabled row, which
+ * is `ORDER BY sort_order, name` — and two shipped rows share a sort order, so
+ * which model the agent drew with came down to which name sorted first. That is
+ * not a decision anyone made, and nothing in the interface showed what it had
+ * landed on.
+ *
+ * So this pins what the fallback already resolves to rather than choosing
+ * something new: behaviour is unchanged on the day it appears, and from then on
+ * the binding is a row in Settings the user can read and change. Every capability
+ * is on, because a profile that gated one would be a second, invisible place for
+ * a feature to be switched off.
+ */
+function seedDefaultProfile(store: Store, config: Config) {
+  if (store.listProfiles().length) return;
+  const enabled = store.listModels().filter((spec) => spec.enabled);
+  const chat = enabled.find((spec) => spec.kind === "chat");
+  const image = enabled.find((spec) => spec.kind === "image" && isRunnable(spec));
+  const video = enabled.find((spec) => spec.kind === "video" && isRunnable(spec));
+  const edit =
+    image && supportsOp(image, "image_to_image")
+      ? image
+      : enabled.find((spec) => spec.kind === "image" && isRunnable(spec) && supportsOp(spec, "image_to_image"));
+  if (!chat && !image) return;
+
+  store.upsertProfile({
+    id: "default",
+    name: "通用",
+    chatModelId: chat?.id ?? "",
+    imageModelId: image?.id ?? "",
+    // Written out even when it equals the image model, so the settings row says
+    // which model edits rather than leaving it to be inferred.
+    editModelId: edit?.id ?? "",
+    videoModelId: video?.id ?? "",
+    capabilities: { memory: true, files: true, web: true, coding: true, skills: true, generation: true },
+    mcpServers: [],
+    sortOrder: 0,
+  });
+  config.setDefaultProfileId("default");
 }
 
 /** Hash of each shipped graph as this code last wrote it, by file name. */

@@ -116,7 +116,6 @@ export class McpPool {
             serverId: server.id,
             serverTitle: server.title,
             name: tool.name,
-            title: tool.title ?? tool.name,
             description: tool.description ?? "",
             kind: classify(tool.name),
             schema: tool.inputSchema as JsonSchema,

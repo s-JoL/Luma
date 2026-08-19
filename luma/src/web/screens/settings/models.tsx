@@ -1,4 +1,4 @@
-import { Pencil, Star, Trash2 } from "lucide-react";
+import { Pencil, Star, Trash2, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type {
   ApiMode,
@@ -6,13 +6,15 @@ import type {
   GenerationOp,
   ModelKind,
   ModelSpec,
+  Profile,
   Provider,
   ProviderAuthConfig,
   ProviderAuthStyle,
   ProviderInput,
+  StudioTool,
   ThinkingLevel,
 } from "@shared/types.ts";
-import { API_MODES, isChatKind, isGenerationKind, needsApiKey, OP_LABELS } from "@shared/types.ts";
+import { API_MODES, isChatKind, isGenerationKind, needsApiKey } from "@shared/types.ts";
 import { api } from "../../api.ts";
 import {
   Badge,
@@ -33,14 +35,6 @@ import {
   useAction,
   useToast,
 } from "../../ui.tsx";
-
-const KIND_LABEL: Partial<Record<ModelKind, string>> = {
-  chat: "对话",
-  image: "图片",
-  video: "视频",
-  embedding: "向量",
-  rerank: "重排",
-};
 
 const THINKING_OPTIONS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -109,16 +103,16 @@ function AuthFields({ draft, onChange }: { draft: AuthDraft; onChange: (next: Au
   );
 }
 
-export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
-  const act = useAction();
+/**
+ * Providers, models and which model is the default: read together because every
+ * page here needs a provider's name to say anything useful about a model, and one
+ * of these pages mounts at a time.
+ */
+function useCatalogue(reload: () => Promise<void>) {
   const toast = useToast();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [defaultModelId, setDefaultModelId] = useState("");
-  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState<ModelSpec | null>(null);
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [addingProvider, setAddingProvider] = useState(false);
 
   const refresh = useCallback(async () => {
     const [providerList, modelList] = await Promise.all([api.providers(), api.models()]);
@@ -131,6 +125,21 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
   useEffect(() => {
     void refresh().catch((error: unknown) => toast(String(error), true));
   }, [refresh, toast]);
+
+  return { providers, models, defaultModelId, refresh };
+}
+
+/**
+ * Endpoints and credentials, which belong to neither audience alone: an OpenAI
+ * key and a ComfyUI address are the same kind of row, and a gateway that answers
+ * for both a chat model and an image model is one provider either way.
+ */
+export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
+  const act = useAction();
+  const { providers, models, refresh } = useCatalogue(reload);
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [addingProvider, setAddingProvider] = useState(false);
 
   return (
     <>
@@ -243,54 +252,66 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
 
       <Catalogue providers={providers} onAdded={refresh} />
 
+      {editingProvider ? (
+        <ProviderEditor
+          provider={editingProvider}
+          onCancel={() => setEditingProvider(null)}
+          onSave={async (input) => {
+            const ok = await act(() => api.updateProvider(editingProvider.id, input), "已保存提供方");
+            if (ok) {
+              setEditingProvider(null);
+              await refresh();
+            }
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The models a conversation runs on. Split from the generation backends because
+ * almost nothing is shared: a context window and a thinking level mean nothing to
+ * an image model, and an aspect ratio means nothing here. The two used to be one
+ * list where every row showed the union of both, and neither read well.
+ */
+export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
+  const act = useAction();
+  const { providers, models, defaultModelId, refresh } = useCatalogue(reload);
+  const [editing, setEditing] = useState<ModelSpec | null>(null);
+  const chat = models.filter((model) => isChatKind(model.kind));
+
+  return (
+    <>
       <Section
-        title="模型"
-        hint="启用决定能不能用，星标决定是否出现在对话右上角。图片与视频模型交给创作台和生成工具。"
+        title="对话模型"
+        hint="启用决定能不能用，星标决定是否出现在对话右上角的切换器里。默认模型是新对话的起点。"
         actions={
           <Button
             size="sm"
-            onClick={() =>
-              setEditing({
-                id: "",
-                name: "",
-                providerId: providers[0]?.id ?? "",
-                model: "",
-                kind: "chat",
-                ops: [],
-                enabled: true,
-                pinned: true,
-                reasoning: false,
-                input: ["text"],
-                contextWindow: 128000,
-                maxTokens: 8192,
-                thinkingLevel: "off",
-                apiMode: "openai-chat",
-                librechatCompat: false,
-                sortOrder: models.length,
-              })
-            }
+            disabled={!providers.length}
+            onClick={() => setEditing(blankModel(providers[0]?.id ?? "", models.length, "chat"))}
           >
             添加
           </Button>
         }
       >
-        {models.map((model) => (
+        {providers.length === 0 ? (
+          <SectionBody>
+            <p className="text-sm text-muted-foreground">先在「提供方」里加一个端点，模型才有地方可去。</p>
+          </SectionBody>
+        ) : null}
+        {chat.map((model) => (
           <Row key={model.id}>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 <strong className="text-sm">{model.name}</strong>
                 {model.id === defaultModelId ? <Badge tone="success">默认</Badge> : null}
-                {isChatKind(model.kind) ? null : (
-                  <Badge tone="accent">
-                    {KIND_LABEL[model.kind] ?? model.kind}
-                    {model.ops.length ? ` · ${model.ops.map((op) => OP_LABELS[op]).join(" / ")}` : ""}
-                  </Badge>
-                )}
                 {model.configured ? null : <Badge tone="danger">提供方缺少密钥</Badge>}
               </div>
               <div className="truncate text-xs text-muted-foreground">
-                {model.providerId} · {model.model} · {apiModeLabel(model.apiMode)}
-                {isChatKind(model.kind) ? ` · ${(model.contextWindow / 1000).toFixed(0)}k 上下文` : ""}
+                {model.providerId} · {model.model} · {apiModeLabel(model.apiMode)} ·{" "}
+                {(model.contextWindow / 1000).toFixed(0)}k 上下文
                 {model.reasoning ? ` · 思考 ${model.thinkingLevel}` : ""}
               </div>
             </div>
@@ -298,22 +319,20 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
               checked={model.enabled}
               onChange={(value) => void act(() => api.updateModel(model.id, { enabled: value })).then(refresh)}
             />
-            {isChatKind(model.kind) ? (
-              <Tooltip label={model.pinned ? "从对话切换器移除" : "固定到对话切换器"}>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="固定"
-                  className={model.pinned ? "text-warning" : "text-muted-foreground"}
-                  onClick={() => void act(() => api.updateModel(model.id, { pinned: !model.pinned })).then(refresh)}
-                >
-                  <Star className={model.pinned ? "fill-current" : undefined} />
-                </Button>
-              </Tooltip>
-            ) : null}
+            <Tooltip label={model.pinned ? "从对话切换器移除" : "固定到对话切换器"}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="固定"
+                className={model.pinned ? "text-warning" : "text-muted-foreground"}
+                onClick={() => void act(() => api.updateModel(model.id, { pinned: !model.pinned })).then(refresh)}
+              >
+                <Star className={model.pinned ? "fill-current" : undefined} />
+              </Button>
+            </Tooltip>
             <Button
               size="sm"
-              disabled={model.id === defaultModelId || !model.enabled || !isChatKind(model.kind)}
+              disabled={model.id === defaultModelId || !model.enabled}
               onClick={() => void act(() => api.setDefaultModel(model.id), "已设为默认").then(refresh)}
             >
               设为默认
@@ -334,19 +353,142 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
         ))}
       </Section>
 
-      {editingProvider ? (
-        <ProviderEditor
-          provider={editingProvider}
-          onCancel={() => setEditingProvider(null)}
-          onSave={async (input) => {
-            const ok = await act(() => api.updateProvider(editingProvider.id, input), "已保存提供方");
+      {editing ? (
+        <ModelEditor
+          model={editing}
+          providers={providers}
+          onCancel={() => setEditing(null)}
+          onSave={async (next, isNew) => {
+            const ok = await act(() => (isNew ? api.createModel(next) : api.updateModel(next.id, next)), "已保存模型");
             if (ok) {
-              setEditingProvider(null);
+              setEditing(null);
               await refresh();
             }
           }}
         />
       ) : null}
+    </>
+  );
+}
+
+/**
+ * The backends that make pictures and video, and what each one is allowed to do.
+ *
+ * Three roles a row can hold, and they are independent, which is exactly why they
+ * are spelled out rather than left to be inferred from two icons: a profile can
+ * name the model as the one the agent draws with, the wrench can additionally hand
+ * it over as a tool of its own that a conversation may call by name, and a model
+ * with neither is still perfectly usable by hand in the studio. "Enabled off" is
+ * the only state that means nothing can reach it.
+ */
+export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
+  const act = useAction();
+  const toast = useToast();
+  const { providers, models, refresh } = useCatalogue(reload);
+  const [editing, setEditing] = useState<ModelSpec | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  /** Live schemas, so a row can say which parameters it actually offers. */
+  const [tools, setTools] = useState<StudioTool[]>([]);
+  const generation = models.filter((model) => isGenerationKind(model.kind));
+
+  useEffect(() => {
+    void Promise.all([api.profiles(), api.studioTools()])
+      .then(([profileList, catalogue]) => {
+        setProfiles(profileList.items);
+        setTools(catalogue.items);
+      })
+      .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), true));
+  }, [toast]);
+
+  /** A blank generation row wants a mode that can generate, not the chat default. */
+  const imageMode = API_MODES.find((mode) => mode.kinds?.includes("image"))?.id ?? "openai-images";
+
+  return (
+    <>
+      <Section
+        title="生成后端"
+        hint="启用决定能不能用；扳手决定是否额外作为一个可点名的工具交给对话模型。不开扳手也仍然能在创作台里手动用，也仍然可以被预设选为默认的生成模型。"
+        actions={
+          <Button
+            size="sm"
+            disabled={!providers.length}
+            onClick={() => setEditing({ ...blankModel(providers[0]?.id ?? "", models.length, "image"), apiMode: imageMode })}
+          >
+            添加
+          </Button>
+        }
+      >
+        {generation.length === 0 ? (
+          <SectionBody>
+            <p className="text-sm text-muted-foreground">
+              还没有生成后端。本地 ComfyUI 与托管的图片、视频接口都在这里配，创作台和对话用的是同一批。
+            </p>
+          </SectionBody>
+        ) : null}
+        {generation.map((model) => {
+          const named = profiles.filter(
+            (profile) =>
+              profile.imageModelId === model.id ||
+              profile.editModelId === model.id ||
+              profile.videoModelId === model.id,
+          );
+          const parameters = tools
+            .filter((tool) => tool.modelId === model.id)
+            .map((tool) => `${tool.op}（${Object.keys(tool.schema.properties ?? {}).length} 项参数）`);
+          return (
+            <Row key={model.id}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <strong className="text-sm">{model.name}</strong>
+                  <Badge tone="accent">
+                    {model.kind}
+                    {model.ops.length ? ` · ${model.ops.join(" / ")}` : ""}
+                  </Badge>
+                  {model.agentTool ? <Badge tone="success">对话可点名</Badge> : null}
+                  {named.length ? (
+                    <Badge tone="outline">预设 {named.map((profile) => profile.name).join("、")}</Badge>
+                  ) : null}
+                  {!model.agentTool && !named.length ? <Badge tone="outline">仅创作台</Badge> : null}
+                  {model.configured ? null : <Badge tone="danger">提供方缺少密钥</Badge>}
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {model.providerId} · {model.model} · {apiModeLabel(model.apiMode)}
+                </div>
+                {parameters.length ? (
+                  <div className="truncate text-xs text-muted-foreground">{parameters.join(" · ")}</div>
+                ) : null}
+              </div>
+              <Switch
+                checked={model.enabled}
+                onChange={(value) => void act(() => api.updateModel(model.id, { enabled: value })).then(refresh)}
+              />
+              <Tooltip label={model.agentTool ? "收回这个独立工具" : "作为独立工具提供给对话模型"}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="作为独立工具提供给对话模型"
+                  className={model.agentTool ? "text-accent" : "text-muted-foreground"}
+                  onClick={() => void act(() => api.updateModel(model.id, { agentTool: !model.agentTool })).then(refresh)}
+                >
+                  <Wrench />
+                </Button>
+              </Tooltip>
+              <Button variant="ghost" size="icon-sm" aria-label="编辑" onClick={() => setEditing(model)}>
+                <Pencil />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="删除"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => void act(() => api.deleteModel(model.id)).then(refresh)}
+              >
+                <Trash2 />
+              </Button>
+            </Row>
+          );
+        })}
+      </Section>
 
       {editing ? (
         <ModelEditor
@@ -365,6 +507,27 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
     </>
   );
 }
+
+/** A new row, with the fields the other kind will ignore left at their defaults. */
+const blankModel = (providerId: string, sortOrder: number, kind: ModelKind): ModelSpec => ({
+  id: "",
+  name: "",
+  providerId,
+  model: "",
+  kind,
+  ops: [],
+  enabled: true,
+  pinned: kind === "chat",
+  agentTool: false,
+  reasoning: false,
+  input: ["text"],
+  contextWindow: 128000,
+  maxTokens: 8192,
+  thinkingLevel: "off",
+  apiMode: "openai-chat",
+  librechatCompat: false,
+  sortOrder,
+});
 
 /**
  * The provider's live catalogue. Aggregators list hundreds of models, so this
@@ -487,7 +650,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                     )}
                     onClick={() => setKind(option)}
                   >
-                    {option === "all" ? "全部" : (KIND_LABEL[option] ?? option)}
+                    {option === "all" ? "全部" : option}
                   </button>
                 ))}
               </div>
@@ -511,8 +674,8 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm">{item.model}</div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {KIND_LABEL[item.suggestion.kind] ?? item.suggestion.kind} · {apiModeLabel(item.suggestion.apiMode)}
-                  {item.suggestion.ops.length ? ` · ${item.suggestion.ops.map((op) => OP_LABELS[op]).join(" / ")}` : ""}
+                  {item.suggestion.kind} · {apiModeLabel(item.suggestion.apiMode)}
+                  {item.suggestion.ops.length ? ` · ${item.suggestion.ops.join(" / ")}` : ""}
                   {item.suggestion.reasoning ? " · 推理" : ""}
                   {item.suggestion.input.includes("image") ? " · 图片输入" : ""}
                 </div>
@@ -762,7 +925,7 @@ function ModelEditor({
               value={draft.kind}
               options={(mode?.kinds ?? ["chat"]).map((kind) => ({
                 value: kind,
-                label: KIND_LABEL[kind] ?? kind,
+                label: kind,
               }))}
               onChange={(value) => set("kind", value as ModelKind)}
             />
@@ -779,7 +942,7 @@ function ModelEditor({
                 ).map((op) => (
                   <Switch
                     key={op}
-                    label={OP_LABELS[op]}
+                    label={op}
                     checked={draft.ops.includes(op)}
                     onChange={(value) =>
                       set("ops", value ? [...draft.ops, op] : draft.ops.filter((item) => item !== op))
@@ -810,6 +973,12 @@ function ModelEditor({
               />
             </Field>
             <Switch label="启用" checked={draft.enabled} onChange={(value) => set("enabled", value)} />
+            <Switch
+              label="作为独立工具提供给对话模型"
+              hint="对话模型默认只拿到预设选定的那个生成模型。打开后，这个模型会额外获得一个以它命名的工具，可以被点名调用。工具的参数表每轮都随请求发送，开得越多固定开销越大。"
+              checked={draft.agentTool}
+              onChange={(value) => set("agentTool", value)}
+            />
           </>
         ) : (
           <>

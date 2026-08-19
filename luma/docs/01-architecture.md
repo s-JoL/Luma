@@ -4,12 +4,15 @@ Luma is a single-user agent workspace. One Node process, no external services,
 and its own data on disk. It replaces a LibreChat deployment that used four
 processes, two databases and a `.env` file.
 
+What it is *for*, and what it deliberately does not do, is `00-product.md`. The
+constraints below are the shape that follows from it; the reasons live there.
+
 ## Constraints that shape everything
 
 1. **One process.** No Python, no PostgreSQL, no separate MCP supervisor. RAG,
    vector search and MCP clients all live inside the Node process. Two SQLite
    files, both embedded: `luma.sqlite` and the session trees in
-   `sessions.sqlite` (`01-data-model.md`).
+   `sessions.sqlite` (`02-data-model.md`).
 2. **No configuration files.** No `.env`, no YAML, no JSON config. Every setting
    and every secret lives in SQLite and is edited from a client.
 3. **API-first.** The web UI is one client among several. An iOS/iPadOS app is
@@ -22,7 +25,7 @@ processes, two databases and a `.env` file.
    advance — a generation backend's parameters, an MCP server's tool — the schema
    comes from the server and the client renders it.
 5. **Behavioural parity with LibreChat** on the paths that were actually used.
-   See `03-tools.md` for the contracts and the places we deliberately diverge.
+   See `04-tools.md` for the contracts and the places we deliberately diverge.
 
 ## Process layout
 
@@ -125,7 +128,7 @@ configured. A capability that needs a key reports only whether one is set —
 plaintext ever leaving the server.
 
 A profile selects a *subset* of what the deployment configured
-(`07-generation.md §Profiles`): it can withhold a capability from one
+(`08-generation.md §Profiles`): it can withhold a capability from one
 conversation, never grant one the deployment has not set up.
 
 ### The `studio` capability
@@ -143,7 +146,7 @@ and surfaced as a studio tool instead, described by the schema its adapter
 declares — the same schema the agent's tool advertises. The studio therefore has
 one kind of thing in it — a tool with a schema — whether the pixels come from a
 local ComfyUI workflow or a remote API, and the local case is no longer an MCP
-sidecar (`07-generation.md`).
+sidecar (`08-generation.md`).
 
 ## One file library
 
@@ -163,22 +166,22 @@ the thumbnailing that makes the screen usable in the first place.
 
 Filesystem and shell access confined to one configured workspace, behind
 independent read / write / shell switches that all start off. Ten tools; schemas
-and the properties that hold across them are in `03-tools.md §5`. Two pieces of
+and the properties that hold across them are in `04-tools.md §5`. Two pieces of
 it live outside the tools themselves, because they are policy rather than
 mechanism: destructive calls are held at a preflight gate until a person answers
-(`approvals`, `02-api.md`), and every overwrite or delete is copied into
+(`approvals`, `03-api.md`), and every overwrite or delete is copied into
 `data/coding-trash` first so a wrong edit is recoverable rather than final.
 
 ### The `skills` capability
 
 Written procedures the model can pull in on demand, from
 `data/skills/<name>/SKILL.md`. It has no config and no switch: a conversation
-gains it by there being a skill on disk. See `03-tools.md §6`.
+gains it by there being a skill on disk. See `04-tools.md §6`.
 
 ## Multi-client design
 
-The web app and the future iOS app are peers (`06-ios-app-prd.md` for what that
-app is, `08-ios-implementation.md` for how it is built). Consequences that must
+The web app and the future iOS app are peers (`07-ios-app-prd.md` for what that
+app is, `09-ios-implementation.md` for how it is built). Consequences that must
 hold from the first commit, because retrofitting them is expensive:
 
 **Device-scoped tokens.** The access code is exchanged once for a long-lived
@@ -289,14 +292,14 @@ failing on purpose.
 
 That independence is currently load-bearing rather than theoretical: the Access
 policy is not yet applied to the deployed hostname, so the access code and the
-rate limiter are the live barrier. See `05-remote-access.md`.
+rate limiter are the live barrier. See `06-remote-access.md`.
 
 Session cookies are `HttpOnly`, `Secure` and `SameSite=Strict`, and
 state-changing requests validate their origin, which together close the
 cross-site paths that a bearer-token-only design leaves open once cookies exist.
 Sessions are listable and individually revocable, since the practical response to
 a lost phone is revoking one device rather than rotating everything. Setup is in
-`05-remote-access.md`.
+`06-remote-access.md`.
 
 ## Verification
 
@@ -309,7 +312,7 @@ running processes:
 | Command | Needs | Proves |
 |---|---|---|
 | `npm run typecheck` | nothing | `src` and `scripts` compile, including the audit drivers |
-| `npm run audit` | nothing external | no export without a caller, `01-data-model.md` still describing the real tables, schema/type agreement, prompt order, session and compaction behaviour, skills, generation adapters against local stubs, coding tools, approvals |
+| `npm run audit` | nothing external | no export without a caller, `02-data-model.md` still describing the real tables, schema/type agreement, prompt order, session and compaction behaviour, skills, generation adapters against local stubs, coding tools, approvals |
 | `npm run e2e` | a running server | the HTTP contract end to end: streaming, files, retrieval, generation, jobs, profiles, approvals, pagination, search, and the error envelope |
 
 `npm run e2e` talks to the audit instance — `audit-db.ts --clone` copies
@@ -353,4 +356,4 @@ separate constants that happen to be equal, because tightening the projected one
 costs nothing — the next turn projects the stored result again — and tightening
 the persisted one throws bytes away for good.
 
-Everything else in `03-tools.md` is copied, including description strings.
+Everything else in `04-tools.md` is copied, including description strings.

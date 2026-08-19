@@ -252,7 +252,7 @@ export function SecuritySection() {
         <SectionBody>
           <p className="text-xs text-muted-foreground">
             推荐用 Cloudflare Tunnel 暴露：本机不开任何公网端口，由 Cloudflare Access 先做一层身份校验，Luma
-            的访问码与两步验证是第二层。具体命令见仓库里的 docs/05-remote-access.md。
+            的访问码与两步验证是第二层。具体命令见仓库里的 docs/06-remote-access.md。
           </p>
           <p className="text-xs text-muted-foreground">
             走反向代理时，把 LUMA_TRUST_PROXY 设为 1：登录限速才能按真实来源 IP

@@ -1,6 +1,12 @@
 # iPhone / iPad client — implementation design
 
-`06-ios-app-prd.md` is the product side of this: what the app is for, what it must
+> **冻结。** 与 `07-ios-app-prd.md` 一同冻结，理由同上：这里的 Swift 类型、
+> 每屏尺寸和构建顺序是按某一刻的服务端写的，而服务端一直在动。它自己就说了
+> 「网页端是对的，本文档有 bug」——冻结只是把这句话记在了标题下面。
+>
+> 重启前先读 `00-product.md`。
+
+`07-ios-app-prd.md` is the product side of this: what the app is for, what it must
 never do, and what "done" means. This document is the build side. It names the
 Xcode project layout, the Swift types, the exact numbers behind every screen, and
 the order to build them in, so the app can be written on a Mac without going back
@@ -53,7 +59,7 @@ the iPad an owner keeps on a desk as a second screen.
 <key>NSAppTransportSecurity</key>
 <dict>
   <!-- A LAN server is plain http on a .local name or a bare IP. The tunnel
-       (05-remote-access.md) is https, so the exception is scoped to local
+       (06-remote-access.md) is https, so the exception is scoped to local
        networking and does not weaken the remote path. -->
   <key>NSAllowsLocalNetworking</key><true/>
 </dict>
@@ -114,7 +120,7 @@ Deliberately **not** taken as dependencies:
   reconnects with its own policy.
 - **A networking library.** The API is nine resources of plain JSON.
 - **An image cache.** `URLCache` with a disk capacity already does it, and the
-  server already answers with immutable long-lived cache headers (`02-api.md
+  server already answers with immutable long-lived cache headers (`03-api.md
   §Files`). §7.6.
 
 ### 1.3 File layout
@@ -218,7 +224,7 @@ of in forty.
 ## 2. What the app talks to
 
 Base URL is whatever the owner typed in setup, plus `/v1`. Everything is JSON,
-UTF-8, timestamps are integer Unix milliseconds. `02-api.md` is the contract;
+UTF-8, timestamps are integer Unix milliseconds. `03-api.md` is the contract;
 this table is only the subset the app uses, so a reader knows the whole surface
 area up front.
 
@@ -286,7 +292,7 @@ Rules that keep this from turning into a mess:
    topped up, and is marked failed in place if the POST fails.
 5. **A rewind refetches.** After any `fromSeq` request the store drops everything
    and refetches the tail, because the server reuses sequence numbers across a
-   rewind (`02-api.md §Editing`).
+   rewind (`03-api.md §Editing`).
 
 ---
 
@@ -466,7 +472,7 @@ struct Endpoint {
 
 Nil query values are dropped, so `messages(id, limit: 60)` sends
 `?limit=60` and nothing else — sending `before=` empty would be a different
-question (`02-api.md §Conversations`).
+question (`03-api.md §Conversations`).
 
 ### 5.2 The client
 
@@ -515,7 +521,7 @@ actor APIClient {
 Retry is narrow on purpose: transport failures and `503`, at most twice, and only
 for requests that are safe to repeat — a GET, or a POST carrying an
 `Idempotency-Key`. Anything else surfaces immediately. The server's own
-`Idempotency-Key` handling (`02-api.md §Conventions`) is what makes a retried send
+`Idempotency-Key` handling (`03-api.md §Conventions`) is what makes a retried send
 safe rather than a duplicate message, and it is the reason the app never has to
 ask "did that go through?".
 
@@ -573,7 +579,7 @@ Three placements, and a screen picks exactly one:
   work: no server configured, or signed out.
 
 `401` and `403` are special: any response with either clears the Keychain and
-routes to sign-in, from wherever it happened. A revoked device (`05-remote-access.md`)
+routes to sign-in, from wherever it happened. A revoked device (`06-remote-access.md`)
 must not be able to sit on a stale screen.
 
 ### 5.4 Auth and the Keychain
@@ -603,7 +609,7 @@ must not travel to another device in an iCloud backup.
 
 Native clients send `Authorization: Bearer <token>`, never the cookie — the cookie
 exists for the browser, and a native client that used it would inherit the
-same-origin `Origin` requirement for writes (`02-api.md §Security`). The one
+same-origin `Origin` requirement for writes (`03-api.md §Security`). The one
 exception is `AVPlayer`, which cannot add a header; §7.7.
 
 `deviceName` on `POST /auth/token` is `UIDevice.current.name` truncated to 40
@@ -775,7 +781,7 @@ Event → part:
 | `conversation.title` | update the conversation list, not the transcript |
 
 The approval-replacement rule matters: the card carries the tool call's id
-(`02-api.md §Approvals`), so when the approved call finally runs, its tool block
+(`03-api.md §Approvals`), so when the approved call finally runs, its tool block
 appears exactly where the question was instead of stacking beneath it.
 
 `known` exists for reattachment. When the app resumes a run that started before
@@ -912,7 +918,7 @@ extension APIClient {
 `bytes.lines` handles both `\n` and `\r\n`. A heartbeat frame arrives as
 `event: heartbeat` with empty data and is used only to reset the watchdog.
 
-**Watchdog.** The server heartbeats every 15s (`02-api.md §Streaming`). A stream
+**Watchdog.** The server heartbeats every 15s (`03-api.md §Streaming`). A stream
 with no frame for 45s is dead in a way TCP will not report for minutes — a
 cellular NAT dropping the flow looks exactly like a model thinking. The follower
 runs a `Task.sleep(45s)` alongside, cancels the stream when it wins the race, and
@@ -946,7 +952,7 @@ Opening a conversation that has an active run is the normal case after a relaunc
    plus `resumeSeq`: the last event already folded into the persisted transcript.
 2. `GET /conversations/:id/messages?limit=60` → build turns.
 3. `GET /conversations/:id/approvals` → seed pending cards. **The row is the truth,
-   not the stream** (`02-api.md §Approvals`); a client that was closed when the
+   not the stream** (`03-api.md §Approvals`); a client that was closed when the
    question was asked has nothing to replay.
 4. If `activeRun` is non-null, `GET /runs/:id/events?after=<activeRun.resumeSeq>`
    with `known` = every tool call id already in the transcript.
@@ -1003,7 +1009,7 @@ with the visible ones.
 `AVPlayer` cannot be given a header, so it is given a cookie instead —
 `AVURLAssetHTTPCookiesKey` is documented, and the server accepts the `luma_token`
 cookie for reads. The same-origin `Origin` requirement applies only to
-cookie-authenticated *writes* (`02-api.md §Security`), and playback is a read.
+cookie-authenticated *writes* (`03-api.md §Security`), and playback is a read.
 
 ```swift
 func videoAsset(_ id: VideoId) -> AVURLAsset {
@@ -1236,7 +1242,7 @@ width, side by side: 拒绝 (bordered, `danger` label) and 允许 (borderedPromi
 "always allow" of any kind, ever. After tapping, both disable and show a spinner
 until the POST returns; the settled state is whatever the server says, because a
 double-tap, a retry and two clients deciding at once all converge on the row
-(`02-api.md §Approvals`). A card that expires renders greyed with 已过期.
+(`03-api.md §Approvals`). A card that expires renders greyed with 已过期.
 
 **Turn actions.** Long-press or the `⋯` on the turn's trailing edge:
 
@@ -1617,7 +1623,7 @@ cache, §6.4), and decoding full-size images (always request `?w=`, §7.6).
 
 **UI (`LumaUITests`)** — against a real audit instance
 (`scripts/restart.ps1 -DataDir data-audit`, access code `AUDITCODE`), one test per
-acceptance item in `06-ios-app-prd.md §Acceptance`:
+acceptance item in `07-ios-app-prd.md §Acceptance`:
 
 1. Sign in, send a message, watch it stream, background the app mid-run, resume, transcript is complete.
 2. Kill the app mid-run, relaunch, reattach, transcript is complete.
@@ -1630,7 +1636,7 @@ acceptance item in `06-ios-app-prd.md §Acceptance`:
 The fixtures do not exist yet; creating them is the first task of step 3 in §13.
 Put them in `luma/docs/fixtures/` so both clients test against the same bytes,
 generate them with one script run against the audit instance, and regenerate them
-whenever `01-data-model.md` changes.
+whenever `02-data-model.md` changes.
 
 ---
 
@@ -1675,7 +1681,7 @@ Recorded so a future reader does not "fix" them.
 wrong: the server already reuses sequence numbers across a rewind, so the mirror
 would need its own reconciliation rules, and two sources of truth for a transcript
 is precisely the bug class the session tree was adopted to remove
-(`01-data-model.md §Transcripts`). The `URLCache` plus a warm `TranscriptStore`
+(`02-data-model.md §Transcripts`). The `URLCache` plus a warm `TranscriptStore`
 covers the case people actually have — reopening a conversation they just read.
 
 **Push notifications for finished runs.** There is no server to push from. The
@@ -1690,7 +1696,7 @@ worth building for what it does better — scroll performance under streaming, t
 keyboard, text selection, Photos, Files, Dynamic Type, VoiceOver — and every one
 of those is exactly what a wrapper gives up.
 
-**WebSocket for runs.** Same answer as the server's (`02-api.md §Rejected
+**WebSocket for runs.** Same answer as the server's (`03-api.md §Rejected
 alternatives`): SSE plus a cursor plus a poll fallback is less machinery, and
 `URLSession` gives resume for free. Steering is a POST.
 

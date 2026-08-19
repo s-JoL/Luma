@@ -1,6 +1,6 @@
 /**
  * Profiles: the named bundle a conversation runs under — models, capabilities,
- * MCP servers, prompts (`07-generation.md §Profiles`).
+ * MCP servers, prompts (`08-generation.md §Profiles`).
  *
  * Deleting the last profile is allowed. A deployment with none behaves exactly
  * as it did before profiles existed, which is what makes the whole feature inert

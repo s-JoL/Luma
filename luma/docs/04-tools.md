@@ -51,16 +51,18 @@ Answered by an adapter rather than by a hardcoded provider. `web-search.ts`
 keeps a registry keyed by `capabilities.web.provider`, and Tavily is the default
 and currently the only entry; a second backend — Brave, SearXNG, Exa, an
 OpenAI-compatible relay — is one object registered beside it. The shape is
-deliberately the one the generation adapters use (`07-generation.md`): a query
+deliberately the one the generation adapters use (`08-generation.md`): a query
 goes in, rows and image results come out, and everything the model actually sees
 is the schema and the output format fixed by this section, which do not change
 with who answered. An adapter also declares `requiresKey`, so a self-hosted
 backend that authenticates by being reachable can be configured without one,
 instead of being refused for a missing key it has no use for.
 
-Up to three calls per invocation (general, then images and news when the model
-asks for them), no reranker. Page extraction is not built; §9 records why it is
-still wanted.
+Up to four calls per invocation — general, then images and news when the model
+asks for them, then one extraction over the general results when it asked to read
+any in full. No reranker. Extraction is declared as an optional `extract` on the
+adapter, so a backend that has no such endpoint keeps working and simply answers
+with snippets.
 
 ### Description
 
@@ -180,10 +182,22 @@ overridable with `TAVILY_SEARCH_URL` — `Authorization: Bearer <key>`:
 
 `date` becomes `time_range` on every call, `country` only on the general one.
 `images: true` adds a second call with `include_images`,
-`news: true` a third with `topic: "news"`. That is the whole chain: no reranker,
-and no page extraction — §9 records that snippets alone are the biggest remaining
-quality gap, and closing it means calling Tavily's `/extract` over the returned
-links.
+`news: true` a third with `topic: "news"`.
+
+`read_pages: N` adds a fourth, to `POST https://api.tavily.com/extract`
+(`TAVILY_EXTRACT_URL`), over the first N general links:
+
+```json
+{ "urls": ["…"], "extract_depth": "basic" }
+```
+
+`basic` matches the search depth; `advanced` buys tables and embedded content at
+several times the price, which is a decision for a deployment and not for one
+sentence in a chat. A failed extraction returns no pages rather than throwing:
+the search already succeeded, and snippets were this tool's whole answer before
+extraction existed, so losing them to a bad second call would make asking for
+more actively worse than not asking. That is the whole chain; there is still no
+reranker.
 
 ### Model-visible output
 
@@ -203,11 +217,16 @@ URL: ${link}
 Summary: ${snippet}
 Date: ${date}
 Source: ${attribution}
+Content:
+${page}
 ```
 
-Blank line between sources. There is no highlight block, because there is no
-reranker to score one, and no output cap: what comes back is `max_results`
-snippets, which the context budget already bounds.
+Blank line between sources. `Content` appears only on a source that was read in
+full, and goes last so the metadata above it stays together. There is no
+highlight block, because there is no reranker to score one, and no output cap on
+either the snippets or a page body: a character cap cuts a table in half and
+charges a Chinese page three times an English one, while pi already bounds a tool
+result at 2 000 lines / 50 KB on a boundary it can name (§9).
 
 ## 2. `file_search`
 
@@ -388,7 +407,7 @@ fit, which meant a large stale entry could hide everything written after it.
 ## 4. MCP
 
 MCP is for third-party servers. Image and video generation is **not** one of
-them: it is a first-party capability with its own adapters (`07-generation.md`),
+them: it is a first-party capability with its own adapters (`08-generation.md`),
 so nothing here is required to draw a picture.
 
 Tool names are `{toolName}_mcp_{serverId}`, e.g. `fetch_mcp_web-fetch`, with `:`
@@ -510,7 +529,7 @@ version control.
 
 **Destruction asks a person.** `delete_path`, a clobbering `write_file` or
 `move_path`, and every `bash_tool` call are held at a preflight gate until
-someone approves them (`02-api.md §Approvals`, and `01-data-model.md` for the
+someone approves them (`03-api.md §Approvals`, and `02-data-model.md` for the
 `approvals` table). A refusal comes back as an ordinary tool result explaining
 why, not as an error the model might retry.
 
@@ -568,7 +587,7 @@ The body — which is the whole point and can be thousands of tokens — is retu
 only by a call, and only for the skill that was asked for. That is what makes a
 large library affordable: the prompt grows by a line per skill, not a document
 per skill. The catalogue is stable within a turn, so it belongs in the cached
-prefix (`04-agent.md §Prompt assembly`).
+prefix (`05-agent.md §Prompt assembly`).
 
 Parameters after `intent`: `name`, enumerated in the parameter description so a
 misspelling is a schema violation rather than a failed call. An unknown name
@@ -594,7 +613,7 @@ comes back is split by audience: the model is handed the finished picture as
 base64 in the tool result, because seeing it is what lets it decide between
 another edit and an answer, while the transcript keeps only an `image_ref` or
 `video_ref`, so a long conversation never carries the bytes twice.
-`07-generation.md` has the operations, the adapters and the queue.
+`08-generation.md` has the operations, the adapters and the queue.
 
 ## 8. `view_image`
 
@@ -610,7 +629,7 @@ it can only ever get an error back. An image attached to the current turn does
 not count, because it is already in context as pixels.
 
 It exists because the transcript names past images rather than carrying them
-(`04-agent.md §Images`). Naming without a way to load would make the model
+(`05-agent.md §Images`). Naming without a way to load would make the model
 guess; loading everything would make every turn cost twenty images. The tool is
 the third option, and it is the model that decides. Editing does not need it —
 `edit_image` reads its source itself.
@@ -624,6 +643,6 @@ the third option, and it is the model that decides. Editing does not need it —
 | Background memory agent available | Explicit tool calls only | `agent.enabled: false` was the configured behaviour anyway |
 | Title generated by `@librechat/agents` `generateTitle` | Our own call, on a minimal naming prompt rather than the chat persona | No dependency on the SDK for a single completion, and the persona answered a naming request the way it answers a turn |
 | Conversation title from truncation *(previous Luma)* | Real LLM call, immediate, parallel with the answer; truncating the user's opening line survives only as the fallback when the call returns nothing usable | Restores LibreChat behaviour; truncation as the mechanism was the regression, but as the fallback it beats a conversation that stays untitled |
-| `/search` + `/extract` | `/search` only, still | Not yet built. Snippets alone are the biggest open quality gap in this file |
+| `/search` + `/extract` | Both, with `read_pages` deciding how many links get opened | Snippets say which page is worth having and not what it says. The model holds the question, so it chooses: 0 for a date or a name, a few when the answer is the wording of a spec or the numbers in a table |
 | `videos` search parameter | Absent | No adapter in the registry has a video sub-search: the flag issued no call and returned nothing without saying so |
 | `max_results` fixed at 5 | Model-chosen, 1–20 | The model holds the question and knows whether five sources settle it |

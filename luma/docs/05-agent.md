@@ -14,11 +14,11 @@ it.
 
 **Stable.** Identical across the turns of one conversation.
 
-1. The `web_search` contract from `03-tools.md §1`, when web search is on.
+1. The `web_search` contract from `04-tools.md §1`, when web search is on.
 2. The prompt pair — the profile's or the deployment's `globalPrompt` and
    `toolPrompt`, joined by a blank line, or the model's own `system_prompt` when it
    sets one — with model identity substituted into it.
-3. The skill catalogue: one line per skill on disk (`03-tools.md §6`). Read from
+3. The skill catalogue: one line per skill on disk (`04-tools.md §6`). Read from
    disk per run, so a new skill takes effect on the next turn, and stable within
    the turn.
 4. The memory tool guard, when memory is on.
@@ -27,9 +27,9 @@ it.
 
 1. The `web_search` runtime context — the conversation date, truncated to the
    minute, because a millisecond made every single request a cache miss.
-2. The searchable-file list from `03-tools.md §2`, with the files attached to this
+2. The searchable-file list from `04-tools.md §2`, with the files attached to this
    turn marked as belonging to the current request.
-3. The memory block, exactly as specified in `03-tools.md §3`.
+3. The memory block, exactly as specified in `04-tools.md §3`.
 
 Order is fixed and asserted by `scripts/audit-prompt.ts`. Reordering these
 silently degrades cache hit rate and changes model behaviour.
@@ -74,7 +74,7 @@ History comes from the conversation's **session tree**, not from the `messages`
 table. The tree is `@earendil-works/pi-agent-core`'s session: an append-only log
 of entries in `data/sessions.sqlite`, one session per conversation, with a single
 lane named `main` marking the current branch. `messages` is a projection of it
-(`01-data-model.md §Transcripts`).
+(`02-data-model.md §Transcripts`).
 
 The message array for a turn is the branch, oldest-first, with everything before
 the newest `compaction` entry replaced by that entry's summary and retained tail.
@@ -151,7 +151,7 @@ the one message standing in for everything already compacted.
 
 Tool results are bounded *before* any of this, so the pruner counts what will
 actually be sent rather than the tool's full output
-(`00-architecture.md §Alignment posture`). Dropping a whole turn to make room for
+(`01-architecture.md §Alignment posture`). Dropping a whole turn to make room for
 bytes the provider was never going to be shown is the failure that ordering
 avoids.
 
@@ -176,7 +176,7 @@ On the way to the model each reference becomes a line of text —
 `[image image_id=img_… 1152x1536 image/png]` — so the transcript states which
 pictures exist and what they are called. Pixels arrive only when the model calls
 `view_image` with an id, and that tool is on the menu only when the branch holds
-an image to name (`03-tools.md §8`). An image the user attaches to the current
+an image to name (`04-tools.md §8`). An image the user attaches to the current
 turn is sent directly, since asking to look at what was just handed over is
 theatre.
 
@@ -189,7 +189,7 @@ model knows whether it needs to see something and the transcript now tells it
 what is available — so it asks, and the guess is gone.
 
 Cost is the reason there is a gate at all; LibreChat's `resendFiles: true`
-re-encodes every historical image on every turn. See `03-tools.md §7`.
+re-encodes every historical image on every turn. See `04-tools.md §7`.
 
 ## Title generation
 
@@ -260,7 +260,7 @@ queued → running → completed | failed | cancelled
 - `steer` injects a user message into the running loop, one at a time.
 - Two minutes after the run settles its deltas are pruned and the pages reclaimed.
   A late subscriber replays the durable events, which are what the transcript is
-  made of anyway (`00-architecture.md §Event durability`).
+  made of anyway (`01-architecture.md §Event durability`).
 
 Tool execution is parallel within a step. The tool list is assembled in a fixed
 order — file search, web, code, generation, MCP, memory, skills — and MCP servers
@@ -278,7 +278,7 @@ These are the assertions that catch alignment drift:
   block.
 - A skill's body never appears in the prompt, only in the result of the
   `use_skill` call that asked for it.
-- The memory block matches the format string in `03-tools.md §3` exactly,
+- The memory block matches the format string in `04-tools.md §3` exactly,
   including the ` [N tokens]` segment and its omission.
 - `intent` is the first key of every native tool schema.
 - Tool schema token counting happens after `intent` injection.

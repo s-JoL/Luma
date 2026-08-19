@@ -26,6 +26,7 @@ import type {
   ProfileInput,
   PromptDefaults,
   PromptSettings,
+  Provenance,
   Provider,
   ProviderInput,
   RunSummary,
@@ -248,6 +249,9 @@ export const api = {
   studioTools: () => request<{ items: StudioTool[]; enabled: boolean }>("GET", "/studio/tools"),
   gallery: (offset = 0, limit = 60) =>
     request<{ items: StudioImage[]; total: number }>("GET", `/studio/gallery?offset=${offset}&limit=${limit}`),
+  /** Where an asset came from. The `img_`/`vid_` prefix picks the route. */
+  provenance: (assetId: string) =>
+    request<Provenance>("GET", `/${assetId.startsWith("vid_") ? "videos" : "images"}/${assetId}/provenance`),
   /** One of `imageId` or `videoId` comes back, depending on what the tool makes. */
   studioRun: (serverId: string, tool: string, args: Record<string, unknown>) =>
     request<{

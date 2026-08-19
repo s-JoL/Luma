@@ -215,6 +215,7 @@ export class Runtime {
         image: resolved.image,
         edit: resolved.edit,
         video: resolved.video,
+        extraGeneration: resolved.extraGeneration,
         uploads,
         onProgress: (job) => this.emit(runId, conversationId, "job.progress", job),
       }),

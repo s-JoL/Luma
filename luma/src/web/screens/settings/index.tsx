@@ -2,31 +2,46 @@
  * Settings, one section per file. The section lives in the path, so a link can
  * point at one — `/settings/security` — and the back button behaves.
  */
-import { Boxes, KeyRound, Plug, SlidersHorizontal, Sparkles, Terminal } from "lucide-react";
+import { Boxes, KeyRound, Plug, Server, SlidersHorizontal, Sparkles, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Bootstrap } from "@shared/types.ts";
 import { cn, PageHeader } from "../../ui.tsx";
 import { CapabilitiesSection } from "./capabilities.tsx";
-import { McpSection } from "./mcp.tsx";
-import { ModelsSection } from "./models.tsx";
+import { ModelsSection, ProvidersSection } from "./models.tsx";
 import { ProfilesSection } from "./profiles.tsx";
 import { PromptsSection } from "./prompts.tsx";
 import { SecuritySection } from "./security.tsx";
+import { ToolsSection } from "./tools.tsx";
 
-type Tab = "models" | "profiles" | "capabilities" | "mcp" | "prompts" | "security";
+type Tab = "providers" | "models" | "tools" | "profiles" | "capabilities" | "prompts" | "security";
 
+/**
+ * Ordered the way a deployment is set up: an endpoint, then something to talk to,
+ * then the things that do work, then how it is all bundled together.
+ *
+ * Conversation models and generation backends are separate pages because they have
+ * almost no settings in common, and the old single list showed every row the union
+ * of both. `mcp` is gone as a page of its own: an MCP server and a local image
+ * model are both "something that does work when asked", and which of them is
+ * implemented as a subprocess is our business rather than the reader's.
+ */
 const TABS: Array<{ id: Tab; label: string; icon: typeof Boxes; hint: string }> = [
-  { id: "models", label: "模型", icon: Boxes, hint: "提供方、对话与生成模型" },
+  { id: "providers", label: "提供方", icon: Plug, hint: "端点与密钥，对话与生成共用" },
+  { id: "models", label: "对话模型", icon: Boxes, hint: "对话跑在哪些模型上" },
+  { id: "tools", label: "工具与后端", icon: Server, hint: "生成后端与 MCP 服务器，以及各自对 agent 开放到什么程度" },
   { id: "profiles", label: "预设", icon: Sparkles, hint: "每个对话可选的模型与能力组合" },
   { id: "capabilities", label: "能力", icon: SlidersHorizontal, hint: "联网、文件、记忆、创作台、代码" },
-  { id: "mcp", label: "MCP", icon: Plug, hint: "外部工具服务器" },
   { id: "prompts", label: "提示词", icon: Terminal, hint: "系统提示与标题生成" },
   { id: "security", label: "安全", icon: KeyRound, hint: "访问码、两步验证、设备" },
 ];
 
+/** Where a link to a page that no longer exists should land instead. */
+const MOVED: Record<string, Tab> = { mcp: "tools" };
+
 function tabFromPath(): Tab {
   const slug = window.location.pathname.replace(/^\/settings\/?/, "");
-  return TABS.some((tab) => tab.id === slug) ? (slug as Tab) : "models";
+  if (TABS.some((tab) => tab.id === slug)) return slug as Tab;
+  return MOVED[slug] ?? "providers";
 }
 
 export function Settings({
@@ -83,10 +98,11 @@ export function Settings({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
             <p className="text-sm text-muted-foreground">{active.hint}</p>
+            {tab === "providers" ? <ProvidersSection reload={reload} /> : null}
             {tab === "models" ? <ModelsSection reload={reload} /> : null}
+            {tab === "tools" ? <ToolsSection reload={reload} /> : null}
             {tab === "profiles" ? <ProfilesSection reload={reload} /> : null}
             {tab === "capabilities" ? <CapabilitiesSection reload={reload} /> : null}
-            {tab === "mcp" ? <McpSection reload={reload} /> : null}
             {tab === "prompts" ? <PromptsSection reload={reload} /> : null}
             {tab === "security" ? <SecuritySection /> : null}
           </div>

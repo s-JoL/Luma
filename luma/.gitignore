@@ -9,6 +9,8 @@ data-audit/
 runtime/
 # Pid files and process logs written by scripts/start.ps1.
 run/
+# Renders copied out by scripts/verify-generation-live.ts, for looking at once.
+probe-out/
 *.tsbuildinfo
 *.log
 .env*

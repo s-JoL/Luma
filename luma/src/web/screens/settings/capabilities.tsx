@@ -1,19 +1,28 @@
+import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Capabilities, McpServer } from "@shared/types.ts";
 import { api } from "../../api.ts";
 import {
   Badge,
   Button,
+  cn,
   Empty,
   Field,
   Input,
   Section,
   SectionBody,
   Select,
+  Spinner,
   Switch,
   useAction,
   useToast,
 } from "../../ui.tsx";
+
+interface ReindexProgress {
+  done: number;
+  total: number;
+  failed: number;
+}
 
 export function CapabilitiesSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
@@ -22,6 +31,8 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [tavilyKey, setTavilyKey] = useState("");
   const [embeddingKey, setEmbeddingKey] = useState("");
+  const [reindexing, setReindexing] = useState(false);
+  const [progress, setProgress] = useState<ReindexProgress | null>(null);
 
   useEffect(() => {
     Promise.all([api.capabilities(), api.mcpServers()])
@@ -39,6 +50,34 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
       setCapabilities(await api.updateCapabilities(input));
       await reload();
     });
+  };
+
+  /**
+   * Re-slices and re-embeds every document with the parameters that are saved
+   * now. One file at a time: the count is the only progress the reader gets,
+   * and firing the whole library at the embedding provider at once would trade
+   * it for rate limits. A file that fails is counted, not fatal — the rest have
+   * no reason to stay on stale chunks.
+   */
+  const reindexAll = async () => {
+    setReindexing(true);
+    setProgress({ done: 0, total: 0, failed: 0 });
+    const ok = await act(async () => {
+      const { items } = await api.files({ limit: 500 });
+      const docs = items.filter((file) => !file.mime.startsWith("image/") && !file.mime.startsWith("video/"));
+      setProgress({ done: 0, total: docs.length, failed: 0 });
+      let failed = 0;
+      for (const [index, file] of docs.entries()) {
+        try {
+          await api.reindexFile(file.id);
+        } catch {
+          failed += 1;
+        }
+        setProgress({ done: index + 1, total: docs.length, failed });
+      }
+    });
+    if (!ok) setProgress(null);
+    setReindexing(false);
   };
 
   return (
@@ -107,9 +146,9 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
             <Select
               value={capabilities.files.mode}
               options={[
-                { value: "hybrid", label: "混合", hint: "向量 + 关键词，RRF 融合" },
-                { value: "semantic", label: "仅向量" },
-                { value: "keyword", label: "仅关键词" },
+                { value: "hybrid", label: "混合", hint: "语义 + 关键词，RRF 融合" },
+                { value: "semantic", label: "仅语义", hint: "只比对嵌入向量" },
+                { value: "keyword", label: "仅关键词", hint: "只走 FTS5 全文索引" },
               ]}
               onChange={(value) => void patch({ files: { mode: value as Capabilities["files"]["mode"] } })}
             />
@@ -119,7 +158,6 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
 
       <Section
         title="嵌入模型"
-        hint="改动切片参数后，需要在文件库里重建索引才会生效。"
         actions={
           <Badge tone={capabilities.embedding.hasKey ? "success" : "warning"}>
             {capabilities.embedding.hasKey ? "已配置" : "缺少密钥"}
@@ -155,6 +193,28 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
               />
             </Field>
           </div>
+          <Field
+            label="重建索引"
+            hint="切片参数只作用于新文件；已经索引过的文档要重建一次，才会按当前的切片大小与重叠重新切片和嵌入。"
+          >
+            <div className="flex items-center gap-3">
+              <Button variant="outline" disabled={reindexing} onClick={() => void reindexAll()}>
+                {reindexing ? <Spinner /> : <RefreshCw />}
+                重建全部文档
+              </Button>
+              {progress ? (
+                reindexing ? (
+                  <span className="text-xs text-muted-foreground">
+                    重建中 {progress.done}/{progress.total}
+                  </span>
+                ) : (
+                  <span className={cn("text-xs", progress.failed ? "text-destructive" : "text-muted-foreground")}>
+                    已重建 {progress.done - progress.failed} 个，失败 {progress.failed} 个
+                  </span>
+                )
+              ) : null}
+            </div>
+          </Field>
           <Field label="API Key">
             <div className="flex gap-2">
               <Input

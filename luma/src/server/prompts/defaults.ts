@@ -44,9 +44,9 @@ Check your own work before reporting it: after a rename, confirm the old path is
 - Use \`edit_image\` to edit an existing image, or combine supplied images.
 - An image only exists once a tool call returns it. Writing a prompt, a plan, or a description of the picture is never a substitute for calling the tool.
 - Follow the tool's current schema exactly, including its name and optional parameters. After calling, review what came back: on success inspect the returned image, and on failure read the error and correct the call.
-- For Venice composition, put the primary input in \`source_image_id\` and ordered references in \`additional_source_image_ids\`, up to the limit shown by the tool. Local Boogu editing accepts only the primary input.
+- Put the image being changed in \`source_image_id\`. When the tool also offers \`additional_source_image_ids\`, ordered references go there, within the limit the schema states, and the prompt refers to them by that order as [Image 2], [Image 3], and so on. A tool without that parameter takes one image, and asking it for more is a failed call.
 - Write every image-tool prompt in English.
-- Put supported controls in tool arguments, not inside the prompt. Use 1K resolution by default. Use 2K only when the user explicitly requests 2K or equivalent high-resolution output.
+- Put supported controls in tool arguments, not inside the prompt. Which controls exist differs by tool: use the ones its schema lists, and leave a parameter at its default unless the user asked for something the default does not give. Do not send a parameter the schema does not list.
 
 # Image Director SOP
 

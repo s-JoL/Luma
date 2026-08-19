@@ -1,5 +1,11 @@
 # Data model
 
+The `CREATE TABLE` blocks below are copied from `src/server/store/schema.sql`
+deliberately, and they are not a relay that can go stale: `npm run audit` parses
+both and fails on any column that differs, so the prose beside each table is
+attached to a definition that is checked rather than remembered. Change the
+schema without changing this file and the audit says so by name.
+
 Two SQLite databases, both opened with `node:sqlite`:
 
 - `data/luma.sqlite` — everything below.
@@ -106,6 +112,7 @@ CREATE TABLE models (
   system_prompt      TEXT,                -- per-model system prompt; replaces the global one
   enabled            INTEGER NOT NULL DEFAULT 1,
   pinned             INTEGER NOT NULL DEFAULT 1,  -- shown in the chat switcher
+  agent_tool         INTEGER NOT NULL DEFAULT 0,  -- generation only: agent gets a tool named after it
   temperature        REAL,                -- both null unless the model needs them
   top_p              REAL,
   pricing            TEXT,                -- $/1M, LibreChat tokenConfig equivalent
@@ -137,7 +144,7 @@ One table holds everything callable, chat or not, because provider, key,
 enablement, ordering and naming are already solved here and a second table would
 fork all of it. `kind` is what separates them, and the chat-only columns —
 `context_window`, `thinking_level`, `temperature` — are simply unused by a drawing
-row (`07-generation.md §Models grow a kind`).
+row (`08-generation.md §Models grow a kind`).
 
 `enabled` and `pinned` separate "may be used" from "is one click away". Adding a
 provider's whole catalogue is one action, so the switcher would otherwise become
@@ -145,6 +152,12 @@ a hundred-item list; bulk-added models land unpinned and get promoted
 individually. A conversation already running on an unpinned model still shows it,
 because hiding the model you are currently talking to is worse than a slightly
 longer list.
+
+`agent_tool` is the same separation on the generation side, and defaults the
+other way. The agent is handed three generation tools bound to the profile's
+chosen models, not one per row, because tool schemas are re-sent every turn;
+setting the flag buys a named tool for that backend at that recurring cost
+(`08-generation.md §What the model calls`).
 
 ## Conversations, messages, runs
 
@@ -186,7 +199,7 @@ CREATE INDEX runs_conversation ON runs(conversation_id, created_at DESC);
 A run row is lifecycle only. Token usage is not copied here because the session
 tree already records it per turn, and `Idempotency-Key` is held in memory rather
 than in a column: a retry follows a dropped POST within seconds, so the window
-only has to outlive a reconnect (`02-api.md §Runs`).
+only has to outlive a reconnect (`03-api.md §Runs`).
 
 ### Transcripts
 
@@ -199,7 +212,7 @@ The projection holds the message entries on that branch, in branch order, with
 `entry_id` pointing back at the entry each row came from. That pointer is what
 turns a client sequence number into a place in the tree, which is how a rewind
 knows where to move the branch to. Clients read only the projection, so the API
-in `02-api.md` is unaffected by any of this.
+in `03-api.md` is unaffected by any of this.
 
 Why a tree at all: a flat list cannot express a rewound turn that is still
 recoverable, history that has been summarized rather than deleted, or what each
@@ -214,7 +227,7 @@ Search is answered from the tree as well. The session backend keeps an FTS5 inde
 over entry payloads inside `sessions.sqlite`, maintained by triggers, so the
 server's own writes keep it current; `messages(entry_id)` is indexed here because
 resolving a hit back to a row on the current branch is what makes it openable
-(`02-api.md §Search`).
+(`03-api.md §Search`).
 
 ### Events
 
@@ -222,7 +235,7 @@ One table for everything a client can be told, live or on reconnect. The
 difference between an event that lasts and one that does not is when it is
 deleted: `message.delta` and `job.progress` are transient and pruned shortly
 after their run settles, everything else is kept
-(`00-architecture.md §Event durability`). Pruning plus incremental vacuum is what
+(`01-architecture.md §Event durability`). Pruning plus incremental vacuum is what
 keeps the file from growing forever, which is what the previous implementation
 got wrong.
 
@@ -270,7 +283,7 @@ CREATE TABLE approvals (
 The row, not the stream, is the decision: a client that was closed when the
 question was asked finds it by listing pending approvals, a decision survives a
 restart, and a run that died leaves rows that are expired at startup rather than
-questions nobody can answer (`02-api.md §Approvals`).
+questions nobody can answer (`03-api.md §Approvals`).
 
 The primary key is the provider's tool-call id, which is not the unique handle
 it looks like — some OpenAI-compatible gateways omit the field, others restart
@@ -416,15 +429,23 @@ for a document written in the app, `librechat` for the migration. It is a plain
 string rather than an enum so a future tool can name its own provenance without a
 migration; clients label the ones they know and show the raw value otherwise.
 
-`video_assets` is the same table one column wider — `duration_ms` and
-`poster_image_id` — because a video is asked the same questions an image is, plus
-how long it is and what to show before it plays.
+`video_assets` is the same table two columns wider, because a video is asked the
+same questions an image is, plus how long it is and what to show before it plays:
+
+```sql
+CREATE TABLE video_assets (
+  video_id, mime, width, height,
+  duration_ms, poster_image_id,       -- the two an image has no answer for
+  provider, model, parent_image_ids,  -- the stills it was animated from, if any
+  created_at
+);
+```
 
 ## Jobs and profiles
 
 Generation is queued, so a request that takes minutes is a row rather than a held
 connection, and a conversation's behaviour is a named bundle rather than a global.
-Both are laid out and argued for in `07-generation.md`:
+Both are laid out and argued for in `08-generation.md`:
 
 ```sql
 CREATE TABLE jobs (
@@ -470,14 +491,14 @@ CREATE TABLE mcp_servers (
 One table holds both kinds of server, and which columns a row fills is what picks
 its transport: a command is spawned over stdio, a URL is connected over
 Streamable HTTP with the deprecated HTTP+SSE transport as the fallback
-(`03-tools.md §Transports`). `headers` is not `env` under another name — one is a
+(`04-tools.md §Transports`). `headers` is not `env` under another name — one is a
 child process's environment and the other is sent to a third party over the
 network — so they are separate columns even though a row written before `url` and
 `headers` existed still works by putting the URL in `command`.
 
 `command`, `args` and `env` may reference `${AIGC_ROOT}`, `${PROJECT_ROOT}`,
 `${NODE_EXE}` and one `${PROVIDER}_API_KEY` per configured provider, resolved from
-the secrets table at spawn time (`03-tools.md §MCP`). Secrets are never stored
+the secrets table at spawn time (`04-tools.md §MCP`). Secrets are never stored
 inline here.
 
 ## Capability configuration

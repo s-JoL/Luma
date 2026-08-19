@@ -20,6 +20,12 @@
  * replaces, including the parts that only exist because they were needed: a
  * client-generated prompt id so a retried submit cannot queue the work twice, and
  * a cancel on the way out so a timed-out prompt does not keep the GPU.
+ *
+ * Progress comes from ComfyUI's WebSocket, which is the only place it exists —
+ * `/queue` knows running from pending and nothing finer. That socket reports the
+ * stage and the step count; it never decides whether the render finished, which
+ * is still read from `/history`, so a backend that will not upgrade the
+ * connection loses the detail and nothing else.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -305,13 +311,126 @@ async function describeQueue(base: string, promptId: string) {
   return undefined;
 }
 
+/**
+ * What a node is doing, in the words someone waiting for it would use. Matched on
+ * the class name because that is what the graph carries, and an unrecognised node
+ * reports its own class rather than a guess — which is how a workflow full of
+ * custom nodes stays legible instead of reading "执行中" for four minutes.
+ */
+const STAGES: Array<[RegExp, string]> = [
+  [/Checkpoint|UNET|Diffusion.*Loader|VAELoader|CLIPLoader|Lora|ControlNetLoader|GGUF/i, "加载模型"],
+  [/LoadImage|ImageScale|ImageBatch|Crop/i, "准备输入"],
+  [/CLIPText|TextEncode|Conditioning/i, "编码提示词"],
+  [/Sampler|Guider|CFG/i, "采样"],
+  [/Decode|Upscale/i, "解码放大"],
+  [/Save|Preview|Output/i, "保存"],
+];
+
+function stageOf(graph: Record<string, { class_type?: string }>, node: string) {
+  const type = graph[node]?.class_type ?? "";
+  for (const [pattern, label] of STAGES) if (pattern.test(type)) return label;
+  return type || "执行中";
+}
+
+/** How long a running prompt may say nothing before the wait admits it is stuck. */
+const STALL_MS = 90_000;
+
+interface ComfyMessage {
+  type?: string;
+  data?: { prompt_id?: string; node?: string | null; value?: number; max?: number };
+}
+
+/** What the socket has told us so far. Read by the poll, written by the socket. */
+interface Live {
+  /** When this prompt was last mentioned, which is how a stall is detected. */
+  at: number;
+  /** True once the upgrade succeeded; false means fall back to the queue's words. */
+  connected: boolean;
+  /** True once a node of ours has executed, which ends the cold start. */
+  executing: boolean;
+  fraction: number | null;
+  stage: string;
+  close(): void;
+}
+
+/**
+ * ComfyUI reports what it is actually doing over a WebSocket and nowhere else:
+ * `/queue` distinguishes running from pending and nothing finer, so "loading the
+ * weights" and "step 3 of 8" cannot be had over HTTP at all.
+ *
+ * So this is an enhancement and never the source of truth. Completion is still
+ * read from `/history` by the poll below, which means a backend that refuses the
+ * upgrade — an old build, a reverse proxy that drops it — behaves exactly as it
+ * did before any of this, reporting the queue position it always reported.
+ */
+function follow(base: string, promptId: string, graph: Record<string, { class_type?: string }>): Live {
+  const live: Live = {
+    at: Date.now(),
+    connected: false,
+    executing: false,
+    fraction: null,
+    stage: "",
+    close: () => {},
+  };
+  let socket: WebSocket;
+  try {
+    // Every client is broadcast every event, so the prompt id serves as the client
+    // id rather than inventing a second identifier to correlate afterwards.
+    socket = new WebSocket(`${base.replace(/^http/i, "ws")}/ws?clientId=${encodeURIComponent(promptId)}`);
+  } catch {
+    return live;
+  }
+  live.close = () => {
+    try {
+      socket.close();
+    } catch {
+      // Already closed by the backend, or never opened at all.
+    }
+  };
+  socket.onopen = () => {
+    live.connected = true;
+  };
+  // A socket that drops is not an error worth surfacing: the poll is still
+  // reading `/history`, so the render is followed either way.
+  socket.onerror = () => {};
+  socket.onmessage = (event) => {
+    let message: ComfyMessage;
+    try {
+      message = JSON.parse(String(event.data)) as ComfyMessage;
+    } catch {
+      // Preview frames arrive on the same socket as binary. They are not status.
+      return;
+    }
+    const data = message.data ?? {};
+    // Anything without our id belongs to another client's render, including the
+    // queue-length broadcasts. Counting those as activity would hide a stall.
+    if (data.prompt_id !== promptId) return;
+    live.at = Date.now();
+    if (message.type === "execution_start") live.executing = true;
+    if (message.type === "executing" && data.node) {
+      live.executing = true;
+      live.stage = stageOf(graph, data.node);
+      // A new node starts over; the old node's step count is not this one's.
+      live.fraction = null;
+    }
+    if (message.type === "progress" && typeof data.value === "number" && data.max) {
+      live.executing = true;
+      live.fraction = Math.min(1, Math.max(0, data.value / data.max));
+      if (data.node) live.stage = stageOf(graph, data.node);
+    }
+  };
+  return live;
+}
+
 async function waitForOutput(
   base: string,
   promptId: string,
+  live: Live,
   ctx: GenerationContext,
 ): Promise<ComfyOutput> {
   const deadline = Date.now() + TOTAL_TIMEOUT_MS;
   let lastNote = "";
+  let lastFraction: number | null = null;
   while (true) {
     if (ctx.signal.aborted) throw new GenerationError("Cancelled", "cancelled");
     if (Date.now() > deadline) throw new GenerationError(`ComfyUI prompt ${promptId} timed out`, "timeout");
@@ -329,10 +448,34 @@ async function waitForOutput(
         throw new GenerationError(`ComfyUI prompt ${promptId} produced no output`, "upstream_error");
       }
     }
-    const note = await describeQueue(base, promptId);
-    if (note && note !== lastNote) {
+    // What the socket says beats what the queue says, because "采样" with a step
+    // count is the render itself while "渲染中" is only the queue's word for it.
+    // Before any node has executed, a prompt the queue calls running is the
+    // process warming up and the weights coming off disk — on a cold start that
+    // is most of the wait, and the one stage worth naming out loud.
+    let note = "";
+    if (live.executing) {
+      note = live.stage || "执行中";
+    } else {
+      const position = await describeQueue(base, promptId);
+      note = live.connected && position === "渲染中" ? "启动中，加载模型" : (position ?? "");
+    }
+
+    // A local render that has gone quiet is either a slow sampler or a wedged
+    // backend, and from the outside those look identical. Saying how long the
+    // silence has lasted is the honest version: it lets the reader decide to
+    // cancel instead of watching a bar that will never move again. Counted in
+    // half-minutes, because a figure that ticks every second is a row rewritten
+    // every second to say the same thing.
+    const silent = Date.now() - live.at;
+    if (live.executing && silent > STALL_MS) {
+      note = `${note} · 已 ${Math.floor(silent / 30_000) / 2} 分钟没有进展`;
+    }
+
+    if (note && (note !== lastNote || live.fraction !== lastFraction)) {
       lastNote = note;
-      ctx.progress(null, note);
+      lastFraction = live.fraction;
+      ctx.progress(live.fraction, note);
     }
     await sleep(POLL_MS, ctx.signal);
   }
@@ -435,14 +578,20 @@ export const comfyAdapter: GenerationAdapter = {
       };
     }
     if (bindings.width && bindings.height) {
-      properties.width = { type: "string", title: "宽（可留空，跟随画幅）" };
-      properties.height = { type: "string", title: "高（可留空，跟随画幅）" };
+      // Exact pixels are for a person with a reason. Offering them alongside the
+      // aspect ratio let a model ask for 16:9 at 1024x1024 and mean neither.
+      properties.width = { type: "string", title: "宽（可留空，跟随画幅）", audience: "studio" };
+      properties.height = { type: "string", title: "高（可留空，跟随画幅）", audience: "studio" };
     }
     // Everything else the graph both binds and describes. A knob is offered
-    // because the workflow says it has one, never because this file names it.
+    // because the workflow says it has one, never because this file names it —
+    // and to the person driving by hand, because these are the sampler, the step
+    // count and the seed, which is the author's tuning rather than anything a
+    // model has grounds to overrule. A workflow with a knob that is genuinely a
+    // creative choice says `"audience": "both"` and gets it back.
     for (const [name, control] of Object.entries(config.controls ?? {})) {
       if (properties[name] || STRUCTURAL.has(name) || !bindings[name]) continue;
-      properties[name] = control;
+      properties[name] = { audience: "studio", ...control };
     }
     return {
       type: "object",
@@ -490,8 +639,9 @@ export const comfyAdapter: GenerationAdapter = {
     const promptId = await queueUp(base, graph, randomUUID(), ctx.signal);
     ctx.adopt(promptId);
     ctx.progress(null, "已提交");
+    const live = follow(base, promptId, graph);
     try {
-      const output = await waitForOutput(base, promptId, ctx);
+      const output = await waitForOutput(base, promptId, live, ctx);
       if (output.kind === "video") {
         // The first frame of an image-to-video is the still a client can show
         // before the bytes arrive, exactly as it is for a hosted render.
@@ -527,6 +677,8 @@ export const comfyAdapter: GenerationAdapter = {
     } catch (error) {
       await cancelPrompt(base, promptId);
       throw error;
+    } finally {
+      live.close();
     }
   },
 

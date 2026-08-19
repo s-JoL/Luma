@@ -1,17 +1,26 @@
 # Luma for iPhone and iPad — product requirements
 
-A native SwiftUI client for the Luma server described in `00-architecture.md`.
+> **冻结。** 这份文档写的是一个尚不存在的客户端，它与
+> `09-ios-implementation.md` 合计约 2460 行，是全部文档的四成有余。产品定义变动期间
+> 两份都不维护：下面的端点清单、像素尺寸和阶段划分只反映写下它们那一刻的服务
+> 端，服务端此后一直在动。
+>
+> 真要重启这件事，先按 `00-product.md` 重认它的前提，尤其是第 15 节
+> 「transcript 是 agent 唯一的记忆」——那是当下实现的前提，不是永远的立场，
+> 而作品实体与它矛盾（`00-product.md §长篇作品实体：暂缓`）。
+
+A native SwiftUI client for the Luma server described in `01-architecture.md`.
 The server is unchanged infrastructure: one process on a home machine, reached
-over Tailscale or a Cloudflare tunnel (`05-remote-access.md`). The app is a
+over Tailscale or a Cloudflare tunnel (`06-remote-access.md`). The app is a
 second client alongside the web bundle and gets no privileged endpoint.
 
 This document is written against the code as it exists, not against
-`02-api.md` alone. Where the two disagree the real behaviour is documented here
+`03-api.md` alone. Where the two disagree the real behaviour is documented here
 and the divergence is called out, because an app built from the prose would not
 compile against the server. Section 18 lists every endpoint the app needs, marks
 which exist today, and orders the server work that has to land first.
 
-It stops at *what* and *why*. `08-ios-implementation.md` is the build side — Xcode
+It stops at *what* and *why*. `09-ios-implementation.md` is the build side — Xcode
 settings, Swift types, per-screen measurements, and the order to write them in.
 
 ## 1. Scope
@@ -227,7 +236,7 @@ with a copy button. Running blocks show an indeterminate progress line; finished
 ones show a duration; failed ones show the error in `danger`.
 
 **Approval cards** appear inline where the tool block will go, keyed by tool call
-id, whenever the server holds a destructive call (see §Approvals in `02-api.md`).
+id, whenever the server holds a destructive call (see §Approvals in `03-api.md`).
 Not a sheet or an alert: the reader needs the tool calls above the card to judge
 what the model is doing, and a modal that covers them turns the decision into a
 guess. The card carries the action badge, the server's one-sentence summary, the
@@ -440,7 +449,7 @@ for the transcript.
 
 ### 12.1 The real event contract
 
-`02-api.md` documents event names that the server does not emit. These are the
+`03-api.md` documents event names that the server does not emit. These are the
 names on the wire, from `src/server/agent/runtime.ts`:
 
 | Type | Persisted | Payload |
@@ -700,7 +709,7 @@ DELETE /v1/security/sessions/:id                POST /v1/security/sessions/revok
 
 ### 18.2 Documentation that must be corrected before an app is written against it
 
-These were places where `02-api.md` would have misled a client author. All of
+These were places where `03-api.md` would have misled a client author. All of
 them have since been corrected in that document; the table is kept because an
 app written against an older copy of the docs will still carry the mistakes.
 
@@ -714,57 +723,32 @@ app written against an older copy of the docs will still carry the mistakes.
 
 ### 18.3 Needed for the app, in migration order
 
-**Phase 1 — required before the transcript screen is usable.**
+**Shipped, and `03-api.md` is now the description of record.** Tail paging on
+`GET /v1/conversations/:id/messages`; the conversation list settled as a second
+call rather than folded into bootstrap; and approvals, which landed in a
+different shape from the one proposed here — a durable resource keyed by tool
+call id, not an argument the model fills in for itself. The reasoning behind
+each is in `03-api.md`; repeating it in a frozen document would only give it a
+second place to go stale.
 
-1. ~~**Tail paging for messages.**~~ **Shipped.**
-   `GET /v1/conversations/:id/messages?limit=<n>[&before=<seq>]` returns a page
-   of the tail, oldest-first within the page, with `nextCursor` set to the
-   earliest seq it returned and `null` at the start of the transcript. `after=`
-   is unchanged, and asking for neither still returns the whole transcript. A
-   page is extended backwards to the user message that opens its turn, so a page
-   never begins on a tool result whose call is on the previous page. Covered by
-   `scripts/e2e.ts`, which walks the cursor and asserts the pages tile the
-   transcript exactly once.
-2. ~~**Conversation list in bootstrap**, or an explicit statement that it is two
-   calls.~~ **Resolved as two calls, and `02-api.md` now says so.** The list is
-   paged and changes far more often than settings, so folding it into bootstrap
-   would make the cheap call as volatile as the expensive one. A cold start is
-   `GET /v1/bootstrap` and `GET /v1/conversations?limit=` in parallel.
+**Still open, and none of it specific to a phone.** These are gaps in the API,
+so they are worth reading even though the rest of this document is frozen:
 
-**Phase 2 — required for the coding and destructive-action stories.**
-
-3. ~~**A tool-approval channel.**~~ **Shipped, and the shape differs from what
-   this section proposed.** The `confirm: true` argument is gone from
-   `delete_path` entirely, because an argument the model fills in is the model
-   confirming to itself. Approvals are their own durable resource keyed by tool
-   call id, not a call on the run:
-   `GET /v1/conversations/:id/approvals`, `GET /v1/approvals`, and
-   `POST /v1/approvals/:id { approved }`; the stream carries
-   `tool.approval.required` and `tool.approval.resolved`. Keying on the row
-   rather than the run is what lets a phone that was closed when the question was
-   asked still find and answer it, and makes a double-tap converge instead of
-   racing. See §Approvals in `02-api.md` for the state machine. The app must
-   fetch the pending list on open; the stream alone is not sufficient.
-4. **Restore surfaced over HTTP.** Deleted and overwritten files are archived
+1. **Restore surfaced over HTTP.** Deleted and overwritten files are archived
    under the data directory with a journal, and `restore_file` exposes that to
    the model. `GET /v1/coding/trash` and `POST /v1/coding/restore` would let the
-   owner recover from the app without asking the agent to do it.
-
-**Phase 3 — quality of life.**
-
-5. **`GET /v1/conversations/:id/runs`** so a relaunch can find an active run
+   owner recover a file without asking the agent to do it — which is the one item
+   here that is a real capability gap rather than a saved round trip.
+2. **`GET /v1/conversations/:id/runs`** so a relaunch can find an active run
    without remembering a run id.
-6. **`If-None-Match` on `/v1/bootstrap`** so a resume costs a 304 instead of the
+3. **`If-None-Match` on `/v1/bootstrap`** so a resume costs a 304 instead of the
    full settings payload.
-7. **A single `GET /v1/files/:id/thumbnail`** alias, so the library does not have
-   to know that images and documents take different paths.
+4. **A single `GET /v1/files/:id/thumbnail`** alias, so a client does not have to
+   know that images and documents take different paths.
 
-Phase 1 item 1 and Phase 2 item 3 are both shipped, so what remains blocks
-nothing: a v1 of chat, files, studio, memory and settings can be built against
-the API as it stands today. The app does have to implement the approval card to
-use the coding tools at all — a destructive call now waits for an answer, and a
-client that cannot give one will simply appear to hang for fifteen minutes
-before the request expires unapproved.
+None of it blocks a client. What does block one is the approval card: a
+destructive call waits for an answer, so a client that cannot give one appears to
+hang for fifteen minutes before the request expires unapproved.
 
 ## 19. Rejected alternatives
 

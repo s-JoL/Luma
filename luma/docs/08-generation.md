@@ -48,11 +48,32 @@ interface GenerationAdapter {
 ```
 
 The schema has two audiences and that is the point of putting it here: the studio
-renders it as a form, and the agent tool advertises it to the model. A parameter
-that only one of them knows about is a bug in the adapter, not a feature. The
-single exception is `intent`, the status label every native tool takes
-(`03-tools.md`), which is prepended to the tool's copy of the schema and stripped
-before the job is submitted — a form has a caption of its own.
+renders it as a form, and the agent tool advertises it to the model. They differ
+in exactly two declared ways, both of them applied in `tools/generation.ts` so
+neither is a surprise buried in the frontend. `intent`, the status label every
+native tool takes (`04-tools.md`), is prepended to the tool's copy and stripped
+before the job is submitted — a form has a caption of its own. And `forModel`
+drops every parameter marked `audience: "studio"`. Any other one-sided parameter
+is a bug in the adapter, not a feature, and the audit asserts as much.
+
+The model is offered what follows from what the user asked for: the prompt, the
+framing (`aspect_ratio`, `size`, `resolution`), a video's `duration`, and the ids
+of the images it wants used. What it is not offered is the sampler and its
+neighbours. A model cannot judge a step count or a CFG scale, does not know the
+seed of the picture it is being asked to vary, and — handed exact pixels beside an
+aspect ratio — can ask for 16:9 at 1024×1024 and mean neither. Whoever trained a
+set of weights already chose those values and `AGENTS.md` asks that Luma follow
+them; withholding the knob is how that recommendation stays in force instead of
+being overruled once per call. Nothing is lost by omission, because an absent
+parameter falls back to the adapter's declared default or to the value already in
+the graph. The studio renders all of it, folded under 高级, which is where the
+person who does have grounds — comparing checkpoints, pinning a seed — reaches it.
+
+Settings that are neither a creative choice nor a manual one belong to neither
+audience. A watermark, an output format, `n`, and a provider's own prompt-rewriting
+or content switches are facts about a deployment, so they are set once: in the
+adapter when the protocol fixes them, in the model row's `params.extra` when they
+vary by model. They never appear in a schema at all.
 
 `run` receives resolved source bytes rather than image ids, because "where do the
 bytes come from" is Luma's problem, not the backend's, and every adapter would
@@ -176,8 +197,13 @@ it — never because this adapter names it — which is what keeps `steps`, `cfg
 `sampler_name`, `scheduler`, `denoise`, `seed` and `negative_prompt` available
 with no model-specific code anywhere. The schema is the one an author writes for
 their own weights: an 8-step Turbo checkpoint says `maximum: 30` and explains
-that more steps only cost time, and that sentence reaches both the studio form
-and the model's tool description.
+that more steps only cost time, and that sentence reaches the studio form.
+
+A declared control defaults to `audience: "studio"`, because everything a graph
+declares about itself is by definition its author's tuning, and the list above is
+the evidence: every one of those names is a sampler internal. A workflow with a
+knob that is genuinely a creative choice — a style strength, a character weight —
+says `"audience": "both"` and gets it back on the model's tool as well.
 
 A control's `default` is used when the caller omits the value, and its
 `minimum`/`maximum` are enforced on the way in — clamped, integers rounded,
@@ -192,12 +218,13 @@ that redeclared them would be competing with the operation rather than
 configuring it. `seed` is the one knob the adapter still touches: `-1`, the
 convention every sampler UI uses, means a fresh seed per call, which is what
 makes "draw it again" mean something, and naming a number is how a picture is
-reproduced.
+reproduced — from the studio, since a model has no way to know the number worth
+naming.
 
-The tool and form schema is therefore `prompt`, plus `source_image_id` for the
-operations that consume an image, plus `aspect_ratio` enumerating the keys of
-`sizes` for the ones that do not, plus `width`/`height` when both are bound, plus
-every declared knob. `sizes` names the shapes the weights were tuned for and
+The form is therefore `prompt`, plus `source_image_id` for the operations that
+consume an image, plus `aspect_ratio` enumerating the keys of `sizes` for the ones
+that do not, plus `width`/`height` when both are bound, plus every declared knob.
+The tool is the first three: exact pixels and the declared knobs are the studio's. `sizes` names the shapes the weights were tuned for and
 `maxPixels` (1 900 000 by default) refuses an explicit size above what the local
 card will finish; `editMegapixels` is the same ceiling for an edit, which resizes
 the source rather than refusing it.
@@ -226,8 +253,30 @@ including the parts that exist only because they were needed: `POST /prompt` wit
 a client-generated `prompt_id`, up to four attempts with the Desktop jobs API
 answering "did my submit already land?" before each retry so a timed-out submit
 cannot render twice, `GET /history/{id}` polled every second under a ten-minute
-ceiling with the queue position reported as progress, `GET /view` for the output,
-and a cancel on the way out so a failed or timed-out prompt does not keep the GPU.
+ceiling, `GET /view` for the output, and a cancel on the way out so a failed or
+timed-out prompt does not keep the GPU.
+
+### What "生成中" is actually doing
+
+The queue distinguishes running from pending and nothing finer, so the stage and
+the step count come from ComfyUI's WebSocket, which is the only place they exist.
+`execution_start`, `executing` and `progress` are followed for our prompt id; the
+executing node's `class_type` is matched against a small table to name what it is
+doing (加载模型, 编码提示词, 采样, 解码放大, 保存), and an unrecognised class
+reports itself rather than a guess, so a graph full of custom nodes stays legible
+instead of reading 执行中 for four minutes.
+
+The socket never decides whether the render finished — that is still read from
+`/history`, so a backend that will not upgrade the connection loses the detail and
+nothing else, and reports the queue position it always reported. Before any node
+has executed, a prompt the queue calls running is the process warming up and the
+weights coming off disk; on a cold start that is most of the wait, and it is
+reported as 启动中，加载模型 rather than left blank.
+
+A running prompt that has said nothing for 90 seconds has the length of its
+silence appended to the note. From outside, a slow sampler and a wedged backend
+look identical, and saying how long the silence has lasted lets the reader decide
+to cancel instead of watching a bar that will never move again.
 
 An edit workflow additionally binds `source` and, when present, `megapixels`; the
 adapter uploads the bytes through `POST /upload/image` first and writes the
@@ -261,11 +310,53 @@ was `running` with a `provider_job_id` goes back to polling — a cloud video
 outlives our process, and losing a paid minute of rendering to a redeploy would
 be our fault, not the provider's. A `running` job with no provider id is failed,
 the same reasoning as an orphaned operation in a session tree
-(`04-agent.md §History`).
+(`05-agent.md §History`).
+
+## 创作台
+
+The manual side of the same adapters. Its whole form is generated from the schema
+`GET /v1/studio/tools` sends, so a newly configured backend arrives with the right
+controls and nothing here changes. What *is* decided here is the order the
+questions get asked in.
+
+**What you are doing comes before what does it.** Three tabs — 生成图片, 编辑图片,
+视频 — and the model is a control inside the chosen tab. The single dropdown this
+replaced listed every model crossed with every operation, so choosing to edit
+meant reading past everything that could only draw. A tab with no model behind it
+is not rendered, because a tab that only ever says "nothing configured" is
+furniture.
+
+**The model picker says what each backend can do**, read off the schema it already
+sent: the aspect ratios, the resolutions, a video's durations, how many reference
+images it takes. Local against hosted is the one thing the schema cannot say and
+the thing most worth knowing before committing to a wait — slow and free, or quick
+and billed — so `StudioTool.local` carries it, decided by whether the provider's
+base URL is a loopback or private address.
+
+**An edit starts from the picture.** The source slot sits above the prompt, since
+the prompt only says what to do to it, and empty it is a drop target rather than a
+button: what people have is a file on the desk or a tile in the gallery beside
+them, and both of those are things you drag. A dropped file is uploaded and gets
+an `img_` id and an asset row, which is what makes it editable at all
+(`03-api.md`); a dragged gallery tile carries its own id and makes no second copy.
+Every gallery tile also has an edit entry of its own, because editing used to be
+two clicks and a modal away from the thing you wanted to edit.
+
+**The wait is quoted from this queue's own record.** Before submitting, the median
+of what this model took for this operation before, over the jobs on record. The
+median and not the mean: a cold start that pulled twelve gigabytes off disk is in
+there too, and one of those drags an average past anything the reader will see.
+With no history there is no estimate, because a guess about a backend nobody has
+run is not information.
+
+**The queue is behind a badge in the header.** It used to hold the top half of the
+canvas whether anything was running or not; now the space belongs to the results
+and the badge says how many are in flight. It opens itself once on submit, so the
+work is visibly somewhere, and stays closed after that if closed.
 
 ## What the model calls
 
-Three tools, and their schemas come from the adapters:
+Three tools by default, and their schemas come from the adapters:
 
 | Tool | Op | Model it uses |
 |---|---|---|
@@ -276,6 +367,16 @@ Three tools, and their schemas come from the adapters:
 A tool exists only when the conversation's profile names a model that supports
 the op, which is what makes the tool list honest: no `edit_image` when the
 configured backend cannot edit, instead of a tool that fails on first use.
+
+Three, not one per configured model, because every tool's schema rides along in
+every request: a catalogue of near-identical drawing tools is a standing token
+cost and leaves the model choosing between equivalents. A deployment that wants
+a particular backend reachable by name anyway sets `models.agent_tool`, and that
+model gains `generate_image_<id>` / `edit_image_<id>` / `generate_video_<id>`
+beside the three above. The flag is off on every row until someone sets it, and a
+model already carrying one of the three is not offered a second time under its
+own name. The extras are ordered by model id, so adding an unrelated model cannot
+reshuffle the tool list and cost the provider's prompt cache.
 
 `edit_image` requires `source_image_id` — an operation that consumes an image says
 so in its schema rather than letting the adapter reject the call — and the ids of

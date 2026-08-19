@@ -59,6 +59,11 @@ export class Db {
     if (models.size && !models.has("pinned")) {
       this.exec("ALTER TABLE models ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1");
     }
+    // Generation models can be handed to the agent one by one. Existing rows opt
+    // out, so the tool list a conversation already sees does not change under it.
+    if (models.size && !models.has("agent_tool")) {
+      this.exec("ALTER TABLE models ADD COLUMN agent_tool INTEGER NOT NULL DEFAULT 0");
+    }
     // `api` moved from the provider to the model, so a provider can serve both
     // chat-completions and messages models from one base URL.
     if (this.columns("providers").has("api")) this.exec("ALTER TABLE providers DROP COLUMN api");

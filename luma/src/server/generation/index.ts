@@ -1,8 +1,11 @@
 /**
  * The generation registry: turns a model row into an adapter, a schema and a
  * runnable request. Everything that wants to make a picture — the studio, the
- * agent's tools, the job queue — comes through here, which is what keeps the
- * studio form and the model's tool description describing the same thing.
+ * agent's tools, the job queue — comes through here, so one adapter describes a
+ * backend once. The studio renders that schema whole; `forModel` narrows it to
+ * the parameters the model is allowed to choose, and because the narrowing is a
+ * function of the same schema, neither audience can learn about a knob the other
+ * has never heard of.
  */
 import fs from "node:fs";
 import type { GenerationOp, JsonSchema, ModelSpec, Provider } from "@shared/types.ts";
@@ -52,6 +55,27 @@ export function schemaOf(spec: ModelSpec, op: GenerationOp): JsonSchema {
   const adapter = generationAdapter(spec);
   if (!adapter) throw new GenerationError(`${spec.name} has no generation adapter`, "not_configured");
   return adapter.schema(spec, op);
+}
+
+/**
+ * The one schema, narrowed to what the model is allowed to choose. Both audiences
+ * are still described in one place — this only drops what an adapter marked as
+ * the person's business, so the two can be compared rather than drifting apart.
+ *
+ * What is dropped is what a model cannot reason about: the sampler and step count
+ * a workflow author already tuned, exact pixel dimensions that can contradict the
+ * aspect ratio next to them, a seed whose previous value the model does not know.
+ * None of it is lost, because an absent parameter falls back to the default the
+ * adapter declared or the value already sitting in the graph.
+ */
+export function forModel(schema: JsonSchema): JsonSchema {
+  const offered = Object.entries(schema.properties ?? {}).filter(([, field]) => field.audience !== "studio");
+  const names = new Set(offered.map(([name]) => name));
+  return {
+    ...schema,
+    properties: Object.fromEntries(offered),
+    required: (schema.required ?? []).filter((name) => names.has(name)),
+  };
 }
 
 /** The first op a model offers, used when a caller does not name one. */

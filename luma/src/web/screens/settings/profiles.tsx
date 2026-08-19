@@ -1,6 +1,6 @@
 /**
  * Profiles: the named bundle a conversation runs under — which models, which
- * tools, which MCP servers, which prompts (`07-generation.md §Profiles`).
+ * tools, which MCP servers, which prompts (`08-generation.md §Profiles`).
  *
  * A deployment with no profiles behaves exactly as it did before they existed,
  * so this page is additive: nothing here has to be filled in.
@@ -27,11 +27,11 @@ import {
 } from "../../ui.tsx";
 
 const CAPABILITIES: Array<{ key: keyof ProfileCapabilities; label: string; hint: string }> = [
-  { key: "generation", label: "图像与视频生成", hint: "把生成模型交给模型自己调用" },
+  { key: "generation", label: "图像与视频生成", hint: "允许对话模型自己发起生成" },
   { key: "web", label: "联网搜索", hint: "需要在「能力」里配好 Tavily 密钥" },
   { key: "files", label: "文件检索", hint: "检索你上传的文档" },
   { key: "memory", label: "记忆", hint: "跨对话记住少量事实" },
-  { key: "skills", label: "技能", hint: "加载 data/skills 下的技能" },
+  { key: "skills", label: "技能", hint: "从 data/skills 目录加载" },
   { key: "coding", label: "代码工具", hint: "在工作目录内读写、执行命令" },
 ];
 
@@ -264,21 +264,21 @@ function ProfileEditor({
               onChange={(value) => set("chatModelId", value)}
             />
           </Field>
-          <Field label="图片模型">
+          <Field label="图片模型" hint="绑定到 generate_image 工具">
             <Select
               value={draft.imageModelId}
               options={pick("image", "text_to_image")}
               onChange={(value) => set("imageModelId", value)}
             />
           </Field>
-          <Field label="编辑模型" hint="留空时，图片模型自己支持编辑就用它">
+          <Field label="图像编辑模型" hint="绑定到 edit_image 工具；留空时，若图片模型本身支持 image_to_image 就用它">
             <Select
               value={draft.editModelId}
               options={pick("image", "image_to_image")}
               onChange={(value) => set("editModelId", value)}
             />
           </Field>
-          <Field label="视频模型">
+          <Field label="视频模型" hint="绑定到 generate_video 工具">
             <Select
               value={draft.videoModelId}
               options={pick("video")}

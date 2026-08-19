@@ -1,6 +1,6 @@
 /**
  * Asserts the system prompt's section order and its stability across turns —
- * the two properties provider prompt caching depends on (`04-agent.md §Prompt
+ * the two properties provider prompt caching depends on (`05-agent.md §Prompt
  * assembly`). Nothing here talks to a provider or a database.
  *
  *   node --import tsx scripts/audit-prompt.ts

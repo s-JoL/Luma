@@ -1,5 +1,5 @@
 /**
- * What a conversation runs under (`07-generation.md §Profiles`).
+ * What a conversation runs under (`08-generation.md §Profiles`).
  *
  * A profile *selects* from the deployment's configuration; it never re-states it.
  * Turning a capability on where the deployment has not configured it does
@@ -22,6 +22,12 @@ export interface ResolvedProfile {
   image?: ModelSpec;
   edit?: ModelSpec;
   video?: ModelSpec;
+  /**
+   * Generation models flagged to reach the agent under their own names, beside
+   * the three above. Empty unless someone asked for it, so the tool list — and
+   * with it the cached prefix of every request — is unchanged by default.
+   */
+  extraGeneration: ModelSpec[];
   /** Undefined means "whatever the deployment enabled", the old behaviour. */
   mcpServers?: Set<string>;
 }
@@ -52,8 +58,11 @@ export function resolveProfile(
     pick(store, profile?.editModelId ?? "", "image") ??
     (image && supportsOp(image, "image_to_image") ? image : images.find((spec) => supportsOp(spec, "image_to_image")));
   const video = pick(store, profile?.videoModelId ?? "", "video") ?? videos[0];
+  // Sorted by id rather than by the catalogue's order, so adding an unrelated
+  // model cannot reshuffle the tools and cost the provider's prompt cache.
+  const extras = [...images, ...videos].filter((spec) => spec.agentTool).sort((a, b) => a.id.localeCompare(b.id));
 
-  if (!profile) return { capabilities, prompts, image, edit, video };
+  if (!profile) return { capabilities, prompts, image, edit, video, extraGeneration: extras };
 
   const gate = profile.capabilities;
   return {
@@ -73,6 +82,7 @@ export function resolveProfile(
     image: gate.generation ? image : undefined,
     edit: gate.generation ? edit : undefined,
     video: gate.generation ? video : undefined,
+    extraGeneration: gate.generation ? extras : [],
     mcpServers: profile.mcpServers.length ? new Set(profile.mcpServers) : undefined,
   };
 }

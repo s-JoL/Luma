@@ -260,14 +260,15 @@ export class Store {
     );
     const sortOrder = input.sortOrder ?? existing?.sort_order ?? this.nextSortOrder("models");
     this.db.run(
-      `INSERT INTO models(id, provider_id, name, model, enabled, pinned, reasoning, input, context_window, max_tokens,
+      `INSERT INTO models(id, provider_id, name, model, enabled, pinned, agent_tool, reasoning, input, context_window, max_tokens,
                           thinking_level, thinking_level_map, api_mode, kind, ops, params,
                           librechat_compat, system_prompt,
                           temperature, top_p, pricing, compat, sort_order, created_at, updated_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          provider_id = excluded.provider_id, name = excluded.name, model = excluded.model,
-         enabled = excluded.enabled, pinned = excluded.pinned, reasoning = excluded.reasoning,
+         enabled = excluded.enabled, pinned = excluded.pinned, agent_tool = excluded.agent_tool,
+         reasoning = excluded.reasoning,
          input = excluded.input,
          context_window = excluded.context_window, max_tokens = excluded.max_tokens,
          thinking_level = excluded.thinking_level, thinking_level_map = excluded.thinking_level_map,
@@ -282,6 +283,7 @@ export class Store {
       input.model,
       input.enabled === false ? 0 : 1,
       input.pinned === false ? 0 : 1,
+      input.agentTool ? 1 : 0,
       input.reasoning ? 1 : 0,
       JSON.stringify(input.input ?? ["text"]),
       input.contextWindow,
@@ -1529,6 +1531,26 @@ export class Store {
     return row ? toJob(row) : undefined;
   }
 
+  /**
+   * The job that produced an asset, which is where its prompt and parameters are.
+   * The asset row carries the backend and the parents and deliberately not these:
+   * a job already records what was asked for, and copying it would give two
+   * answers that could disagree.
+   *
+   * Newest wins. An asset id is content-addressed, so a request repeated with the
+   * same parameters and the same seed lands on the row it already had, and the
+   * most recent job is the one whose parameters were in force.
+   */
+  jobForAsset(assetId: string): JobRecord | undefined {
+    const row = this.db.get(
+      `SELECT * FROM jobs
+        WHERE EXISTS (SELECT 1 FROM json_each(jobs.assets) WHERE json_extract(value, '$.assetId') = ?)
+        ORDER BY created_at DESC LIMIT 1`,
+      assetId,
+    );
+    return row ? toJob(row) : undefined;
+  }
+
   listJobs(options: { status?: JobStatus; conversationId?: string; limit?: number } = {}): JobRecord[] {
     const limit = Math.min(200, Math.max(1, options.limit ?? 50));
     return this.db
@@ -1646,6 +1668,7 @@ function toModelSpec(row: Record<string, unknown>): ModelSpec {
     model: String(row.model),
     enabled: bool(row.enabled),
     pinned: bool(row.pinned),
+    agentTool: bool(row.agent_tool),
     reasoning: bool(row.reasoning),
     input: json<Array<"text" | "image">>(row.input, ["text"]),
     contextWindow: Number(row.context_window),

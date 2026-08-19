@@ -6,7 +6,7 @@
  * ComfyUI, an OpenAI-shaped image API and an asynchronous video API, which is
  * what lets this assert on submit/poll/fetch, cancellation and restart recovery
  * without a GPU or a bill. The claims tested are the ones in
- * `07-generation.md §What must be tested`.
+ * `08-generation.md §What must be tested`.
  *
  *   node --import tsx scripts/audit-generation.ts
  */
@@ -415,7 +415,7 @@ await check("a video submit is never retried", async () => {
   return "one submit, one failure: a second would queue a second paid render";
 });
 
-await check("the studio form and the model's tool describe the same parameters", () => {
+await check("the model's tool is the studio's form minus the knobs only a person sets", () => {
   const form = schemaOf(spec("local"), "text_to_image");
   const tools = generationTools({ jobs, store, conversationId: "c1", image: spec("local"), uploads: [] });
   const tool = tools.find((entry) => entry.name === "generate_image")!;
@@ -424,9 +424,22 @@ await check("the studio form and the model's tool describe the same parameters",
   // backend is asked for, so it is the one key a form has no business rendering.
   const keys = Object.keys(advertised);
   assert(keys[0] === "intent", "intent has to come first for a client to label the call");
-  assert(keys.slice(1).join() === Object.keys(form.properties!).join(), "the form and the tool diverge");
+  const declared = Object.entries(form.properties ?? {});
+  const offered = declared.filter(([, field]) => field.audience !== "studio").map(([name]) => name);
+  const withheld = declared.filter(([, field]) => field.audience === "studio").map(([name]) => name);
+  // The two audiences may differ only by that marking. Anything else on one side
+  // alone is a knob one of them has never heard of, which is the drift this whole
+  // arrangement exists to prevent.
+  assert(keys.slice(1).join() === offered.join(), "the form and the tool diverge by more than the marking");
   assert("aspect_ratio" in advertised, "the tool cannot choose a size the form offers");
-  return `${keys.length - 1} parameters, both audiences, plus intent`;
+  // And the marking has to bite: exact pixels stay with the person, because a
+  // model that could still send them could contradict the ratio beside them.
+  assert(withheld.includes("width"), "the form lost the exact size a person sets by hand");
+  assert(!("width" in advertised), "the model can still contradict the aspect ratio it just chose");
+  // A parameter the model cannot send must never be one the call demands.
+  const demanded = form.required ?? [];
+  assert(!withheld.some((name) => demanded.includes(name)), "a call requires something only a person can send");
+  return `${offered.length} offered to the model, ${withheld.length} kept for the form, plus intent`;
 });
 
 await check("an operation that consumes an image demands one, an optional frame stays optional", () => {
@@ -559,6 +572,45 @@ await check("a deployment with no profiles behaves exactly as before", async () 
   assert(resolved.edit?.id === "local-edit", `no editor was found: ${resolved.edit?.id ?? "none"}`);
   assert(resolved.prompts.globalPrompt === config.prompts().globalPrompt, "the global prompt changed");
   return "generation still works, prompts unchanged";
+});
+
+await check("a model asked for by name gets a tool of its own, and never twice", async () => {
+  const { resolveProfile } = await import("../src/server/agent/profile.ts");
+  const { Config } = await import("../src/server/config.ts");
+  const config = new Config(store, vault);
+  const toolsNow = () => {
+    const resolved = resolveProfile(store, config, {});
+    return generationTools({
+      jobs,
+      store,
+      conversationId: "c3",
+      image: resolved.image,
+      edit: resolved.edit,
+      video: resolved.video,
+      extraGeneration: resolved.extraGeneration,
+      uploads: [],
+    }).map((tool) => tool.name);
+  };
+
+  const before = toolsNow();
+  assert(before.length === 3, `an unflagged deployment offered ${before.join(", ")}`);
+
+  store.upsertModel({ ...spec("hosted-image"), agentTool: true });
+  const named = toolsNow();
+  assert(named.includes("generate_image_hosted_image"), `no named draw tool in ${named.join(", ")}`);
+  assert(named.includes("edit_image_hosted_image"), `no named edit tool in ${named.join(", ")}`);
+
+  // "local" already carries `generate_image`; asking for it by name as well would
+  // hand the model two tools that do one thing.
+  store.upsertModel({ ...spec("local"), agentTool: true });
+  const both = toolsNow();
+  assert(!both.some((name) => name.startsWith("generate_image_local")), `local was offered twice: ${both.join(", ")}`);
+  assert(new Set(both).size === both.length, `duplicate tool name in ${both.join(", ")}`);
+
+  store.upsertModel({ ...spec("hosted-image"), agentTool: false });
+  store.upsertModel({ ...spec("local"), agentTool: false });
+  assert(toolsNow().length === 3, "clearing the flag left a tool behind");
+  return `3 by default, ${named.length} once one model is named, and the default model is never doubled`;
 });
 
 await check("two profiles in one deployment get different tools", async () => {

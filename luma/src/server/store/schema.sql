@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS models (
   model              TEXT NOT NULL,
   enabled            INTEGER NOT NULL DEFAULT 1,
   pinned             INTEGER NOT NULL DEFAULT 1,
+  agent_tool         INTEGER NOT NULL DEFAULT 0,
   reasoning          INTEGER NOT NULL DEFAULT 0,
   input              TEXT NOT NULL DEFAULT '["text"]',
   context_window     INTEGER NOT NULL DEFAULT 128000,
@@ -259,7 +260,7 @@ END;
 -- Float32 little-endian vectors, unit length at write time so cosine is a plain
 -- dot product. A search scores every row, from one packed matrix held in memory
 -- and rebuilt only when a vector is written, so no ANN index is warranted at
--- this scale (`01-data-model.md §Why brute force`).
+-- this scale (`02-data-model.md §Why brute force`).
 CREATE TABLE IF NOT EXISTS embeddings (
   chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
   file_id  TEXT NOT NULL,
@@ -299,7 +300,7 @@ CREATE TABLE IF NOT EXISTS video_assets (
 
 -- One row per generation request. The row is the whole state: a reconnecting
 -- client reads it instead of replaying an event log, because a job emits no
--- incremental content the way a run does (07-generation.md §Jobs).
+-- incremental content the way a run does (08-generation.md §Jobs).
 --
 -- conversation_id is nullable and deliberately not a foreign key: a studio job
 -- belongs to nobody's transcript, and deleting a conversation must not erase the

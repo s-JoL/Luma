@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, X } from "lucide-react";
+import { CircleAlert, CircleCheck, Info, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { cn } from "./cn.ts";
 
@@ -65,7 +65,14 @@ export function useAction() {
   );
 }
 
-export function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
+/**
+ * `aside` is a slot rather than a feature: looking closer at a picture and asking
+ * where it came from are the same impulse, so the panel belongs here, but this
+ * file stays presentational and the screen supplies whatever does the asking.
+ */
+export function Lightbox({ src, onClose, aside }: { src: string; onClose: () => void; aside?: ReactNode }) {
+  const [open, setOpen] = useState(false);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -80,12 +87,37 @@ export function Lightbox({ src, onClose }: { src: string; onClose: () => void })
       onClick={onClose}
     >
       <img src={src} alt="" className="max-h-full max-w-full rounded-md object-contain shadow-2xl" />
-      <button
-        className="absolute top-4 right-4 rounded-md bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-        aria-label="关闭"
-      >
-        <X className="size-5" />
-      </button>
+      {aside && open ? (
+        // Clicks inside are for the panel; the backdrop keeps closing the viewer.
+        <div
+          className="absolute inset-y-4 right-4 flex items-start justify-end overflow-hidden"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {aside}
+        </div>
+      ) : null}
+      <div className="absolute top-4 right-4 flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
+        {aside ? (
+          <button
+            className={cn(
+              "rounded-md p-2 text-white transition-colors hover:bg-white/20",
+              open ? "bg-white/25" : "bg-white/10",
+            )}
+            aria-label="来源与参数"
+            aria-pressed={open}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <Info className="size-5" />
+          </button>
+        ) : null}
+        <button
+          className="rounded-md bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+          aria-label="关闭"
+          onClick={onClose}
+        >
+          <X className="size-5" />
+        </button>
+      </div>
     </div>
   );
 }

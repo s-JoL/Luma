@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
-import type { FileKind, FileSearchMode } from "@shared/types.ts";
+import type { Context } from "hono";
+import type { FileKind, FileSearchMode, Provenance } from "@shared/types.ts";
 import { MAX_UPLOAD_BYTES, paths } from "../../env.ts";
 import { assetPath, forgetAssetIndex, writeImageSidecar } from "../../images.ts";
 import type { Services } from "../../services.ts";
@@ -272,6 +273,63 @@ export function fileRoutes(services: Services) {
     } finally {
       fs.closeSync(handle);
     }
+  });
+
+  /**
+   * Where one asset came from. Two rows answer it — the asset knows its backend
+   * and its parents, the job knows the prompt and the parameters — and neither is
+   * asked to keep the other's copy, so the two can never disagree.
+   *
+   * Both media get the same route because the question is the same one, and a
+   * client that has an id already knows which kind it holds from its prefix.
+   */
+  const provenance = (context: Context, assetId: string, kind: "image" | "video") => {
+    const asset = kind === "image" ? store.getImageAsset(assetId) : undefined;
+    const video = kind === "video" ? store.getVideoAsset(assetId) : undefined;
+    const file = store.getFile(assetId);
+    // Neither an asset row nor a library row means nothing here made this and
+    // nothing here has it, which is a 404 rather than an empty answer.
+    if (!asset && !video && !file) return fail(context, 404, "not_found", "Asset not found");
+
+    const job = store.jobForAsset(assetId);
+    const model = job ? store.getModel(job.modelId) : undefined;
+    const record: Provenance = {
+      assetId,
+      kind,
+      mime: asset?.mime ?? video?.mime ?? file?.mime ?? (kind === "image" ? "image/png" : "video/mp4"),
+      width: asset?.width ?? video?.width ?? file?.width ?? null,
+      height: asset?.height ?? video?.height ?? file?.height ?? null,
+      durationMs: video?.durationMs ?? null,
+      provider: asset?.provider ?? video?.provider ?? file?.source ?? null,
+      model: asset?.model ?? video?.model ?? null,
+      parents: asset?.parentImageIds ?? video?.parentImageIds ?? [],
+      createdAt: asset?.createdAt ?? video?.createdAt ?? file?.createdAt ?? 0,
+      job: job
+        ? {
+            id: job.id,
+            op: job.op,
+            modelId: job.modelId,
+            modelName: job.modelName,
+            repeatable: Boolean(model?.enabled && (model.ops ?? []).includes(job.op)),
+            params: job.params,
+            sources: job.sources,
+            elapsedMs: job.finishedAt && job.startedAt ? job.finishedAt - job.startedAt : null,
+          }
+        : undefined,
+    };
+    return context.json(record);
+  };
+
+  app.get("/images/:imageId/provenance", (context) => {
+    const imageId = context.req.param("imageId");
+    if (!/^img_[0-9a-f]{32}$/i.test(imageId)) return fail(context, 400, "invalid", "Malformed image id");
+    return provenance(context, imageId.toLowerCase(), "image");
+  });
+
+  app.get("/videos/:videoId/provenance", (context) => {
+    const videoId = context.req.param("videoId");
+    if (!/^vid_[0-9a-f]{32}$/i.test(videoId)) return fail(context, 400, "invalid", "Malformed video id");
+    return provenance(context, videoId.toLowerCase(), "video");
   });
 
   return app;

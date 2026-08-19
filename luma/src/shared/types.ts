@@ -20,7 +20,7 @@ export type ApiMode =
 
 /**
  * What a model is for. `chat` models go through pi-ai; the generation kinds go
- * through a generation adapter named by `apiMode` (`07-generation.md`).
+ * through a generation adapter named by `apiMode` (`08-generation.md`).
  */
 export type ModelKind = "chat" | "image" | "video" | "embedding" | "rerank";
 
@@ -49,6 +49,13 @@ export const isChatKind = (kind: ModelKind | undefined) => (kind ?? "chat") === 
 
 export const isGenerationKind = (kind: ModelKind | undefined) => kind === "image" || kind === "video";
 
+/**
+ * An operation in the words someone waiting on it would use. For the surfaces
+ * where a person is making something — a queue card, a picture's provenance.
+ * Settings deliberately shows the raw op instead, beside the raw model id and
+ * api mode, because that is the vocabulary its reader is matching against a
+ * schema and the docs.
+ */
 export const OP_LABELS: Record<GenerationOp, string> = {
   text_to_image: "文生图",
   image_to_image: "改图",
@@ -123,6 +130,13 @@ export interface ModelSpec {
    * listed in settings; pinning is only about which few are one tap away.
    */
   pinned: boolean;
+  /**
+   * Generation only: offer this model to the agent as a tool of its own, beside
+   * the profile's default one. Off by default because every tool's schema rides
+   * along in each request, so a catalogue of near-identical drawing tools costs
+   * tokens on every turn and leaves the model choosing between equivalents.
+   */
+  agentTool: boolean;
   reasoning: boolean;
   input: Array<"text" | "image">;
   contextWindow: number;
@@ -148,11 +162,12 @@ export interface ModelSpec {
 
 export type ModelInput = Omit<
   ModelSpec,
-  "configured" | "sortOrder" | "librechatCompat" | "pinned" | "kind" | "ops" | "params"
+  "configured" | "sortOrder" | "librechatCompat" | "pinned" | "agentTool" | "kind" | "ops" | "params"
 > & {
   sortOrder?: number;
   librechatCompat?: boolean;
   pinned?: boolean;
+  agentTool?: boolean;
   kind?: ModelKind;
   ops?: GenerationOp[];
   params?: Record<string, unknown> | null;
@@ -252,12 +267,17 @@ export interface StudioTool {
   serverId: string;
   serverTitle: string;
   name: string;
-  title: string;
   description: string;
   kind: "generate" | "edit" | "video" | "other";
   schema: JsonSchema;
   modelId?: string;
   op?: GenerationOp;
+  /**
+   * Whether this runs on our own GPU. Worth knowing before committing to a wait:
+   * a local render is slow and free, a hosted one is quick and billed. Absent for
+   * an MCP tool, whose backend this server cannot see.
+   */
+  local?: boolean;
 }
 
 export interface JsonSchema {
@@ -270,6 +290,16 @@ export interface JsonSchema {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
+  /** A list's cap, stated machine-readably so a model need not read the title. */
+  maxItems?: number;
+  /**
+   * Who the control is for. Absent, or `both`, means the model may set it and the
+   * studio renders it. `studio` keeps it out of the tool the model is offered,
+   * for a knob a model has no grounds to choose: a sampler its author already
+   * tuned, or a seed only a person has a reason to pin. Omitting a parameter is
+   * not the same as losing it — the adapter or the graph still carries a value.
+   */
+  audience?: "both" | "studio";
   items?: JsonSchema;
   properties?: Record<string, JsonSchema>;
   required?: string[];
@@ -506,7 +536,7 @@ export interface GeneratedAsset {
 /**
  * One generation request. A job's whole state is this row, which is why there is
  * no job event log: a reconnecting client reads it and knows everything
- * (`07-generation.md §Jobs`).
+ * (`08-generation.md §Jobs`).
  */
 export interface JobRecord {
   id: string;
@@ -537,6 +567,47 @@ export interface JobInput {
   conversationId?: string | null;
   params?: Record<string, unknown>;
   sources?: string[];
+}
+
+/**
+ * Where one asset came from, assembled rather than stored: the asset row knows the
+ * backend and the parents, and the job row knows the prompt and the parameters.
+ * Neither is a new table, and asking the question this way means an image made
+ * before the queue existed still answers with what is on record about it.
+ */
+export interface Provenance {
+  assetId: string;
+  kind: "image" | "video";
+  mime: string;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  provider: string | null;
+  model: string | null;
+  /** What it was made from: the source images of an edit, or a video's stills. */
+  parents: string[];
+  createdAt: number;
+  /**
+   * The request behind it, when there is one. Absent for an upload and for
+   * anything generated before jobs were recorded, which is why every field above
+   * stands on its own.
+   */
+  job?: {
+    id: string;
+    op: GenerationOp;
+    modelId: string;
+    modelName: string;
+    /**
+     * Whether the same request could be sent again — the model row still exists,
+     * is enabled and still runs this operation. A button that would 404 is worse
+     * than no button, and a deleted model is the ordinary way this goes false.
+     */
+    repeatable: boolean;
+    params: Record<string, unknown>;
+    sources: string[];
+    /** Wall time the render took, when both ends were recorded. */
+    elapsedMs: number | null;
+  };
 }
 
 /** Which capabilities a profile offers. Their configuration stays deployment-wide. */

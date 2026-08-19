@@ -12,7 +12,6 @@
  */
 import { Hono } from "hono";
 import type { GenerationOp, ModelSpec, StudioTool } from "@shared/types.ts";
-import { OP_LABELS } from "@shared/types.ts";
 import { registerGeneratedImage } from "../../images.ts";
 import { isRunnable, opsOf, schemaOf } from "../../generation/index.ts";
 import type { Services } from "../../services.ts";
@@ -25,8 +24,25 @@ const MODEL_PREFIX = "model:";
 const kindFor = (op: GenerationOp): StudioTool["kind"] =>
   op === "image_to_image" ? "edit" : op === "text_to_image" ? "generate" : "video";
 
+/**
+ * Loopback or a private network: our own machine, or one on the same desk. The
+ * distinction is worth surfacing because it is the difference between a wait that
+ * is slow and free and one that is quick and billed, and a client cannot work it
+ * out from a model's name.
+ */
+const PRIVATE_HOST = /^(localhost|127\.|0\.0\.0\.0|::1|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i;
+
+function isLocal(baseUrl: string | undefined) {
+  if (!baseUrl) return false;
+  try {
+    return PRIVATE_HOST.test(new URL(baseUrl).hostname.replace(/^\[|\]$/g, ""));
+  } catch {
+    return false;
+  }
+}
+
 /** One entry per operation, so "draw" and "edit" are separate choices. */
-function modelTools(specs: ModelSpec[]): StudioTool[] {
+function modelTools(specs: ModelSpec[], hostOf: (providerId: string) => string | undefined): StudioTool[] {
   const items: StudioTool[] = [];
   for (const spec of specs) {
     for (const op of opsOf(spec)) {
@@ -34,12 +50,12 @@ function modelTools(specs: ModelSpec[]): StudioTool[] {
         serverId: `${MODEL_PREFIX}${spec.id}`,
         serverTitle: spec.name,
         name: op,
-        title: `${spec.name} · ${OP_LABELS[op]}`,
         description: spec.systemPrompt ?? `${spec.name} · ${spec.providerId}`,
         kind: kindFor(op),
         schema: schemaOf(spec, op),
         modelId: spec.id,
         op,
+        local: isLocal(hostOf(spec.providerId)),
       });
     }
   }
@@ -60,7 +76,7 @@ export function studioRoutes(services: Services) {
       .catalogue()
       .filter((tool) => (allowed.size ? allowed.has(tool.serverId) : true))
       .filter((tool) => tool.kind !== "other");
-    return [...modelTools(generationSpecs()), ...fromMcp];
+    return [...modelTools(generationSpecs(), (providerId) => store.getProvider(providerId)?.baseUrl), ...fromMcp];
   };
 
   app.get("/studio/tools", (context) =>

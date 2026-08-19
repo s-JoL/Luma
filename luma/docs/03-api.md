@@ -85,7 +85,7 @@ a suspected leak one action instead of a cleanup. A session is identified by the
 hash of its token: enough to list and revoke, useless as a credential.
 
 Cookie-authenticated writes additionally require a same-origin `Origin` header;
-see `05-remote-access.md` for the full deployment posture.
+see `06-remote-access.md` for the full deployment posture.
 
 ## Bootstrap
 
@@ -162,7 +162,7 @@ replays nothing it already has and misses nothing it does not.
 
 `profileId` picks the named bundle the conversation runs under — its chat, image
 and video models, which capabilities and MCP servers are offered, and its prompt
-pair (`07-generation.md §Profiles`). Omitting it on create uses the default
+pair (`08-generation.md §Profiles`). Omitting it on create uses the default
 profile; a deployment with no profiles behaves exactly as one with none ever did,
 which is what keeps the field inert on existing data.
 
@@ -214,7 +214,7 @@ run, which is the whole of both *edit* and *regenerate*: editing sends new text 
 the old message's sequence, regenerating sends the original text back. Under the
 API this moves the session tree's branch pointer and re-projects the transcript
 from there, so the abandoned turns survive on disk while no client is ever offered
-a fork to reconcile (`01-data-model.md §Transcripts`). The rewind runs only after
+a fork to reconcile (`02-data-model.md §Transcripts`). The rewind runs only after
 the model resolves, so a request naming a model that cannot be reached leaves the
 history intact.
 
@@ -367,7 +367,7 @@ GET   /v1/providers/:id/models            → { items: DiscoveredModel[] }  -- l
 GET   /v1/models                          → { items: Model[], defaultModelId }
 POST  /v1/models                          { providerId, model, name, apiMode, kind?, ops?, params?, … } → Model (201)
 POST  /v1/models/bulk                     { providerId, models: ModelInput[] } → { added, skipped }
-PATCH /v1/models/:id                      { name?, apiMode?, kind?, ops?, params?, contextWindow?, maxTokens?, thinkingLevel?, systemPrompt?, enabled?, pinned?, pricing? }
+PATCH /v1/models/:id                      { name?, apiMode?, kind?, ops?, params?, contextWindow?, maxTokens?, thinkingLevel?, systemPrompt?, enabled?, pinned?, agentTool?, pricing? }
 PUT   /v1/models/default                  { modelId } → { defaultModelId }
 DELETE /v1/models/:id                     → 204
 
@@ -400,7 +400,7 @@ correct, since it may have been edited on purpose, but it also means the only wa
 back is to be told what the current default says.
 
 `PromptSettings` is `{ globalPrompt, toolPrompt, titleModelId, titleEnabled }`:
-the two halves of the prompt pair (`04-agent.md §Prompt assembly`), plus which
+the two halves of the prompt pair (`05-agent.md §Prompt assembly`), plus which
 model writes conversation titles and whether it does at all. An omitted field
 keeps its stored value; an empty string is a real value and clears it.
 
@@ -417,12 +417,16 @@ the pi-ai provider graph and the chat switcher, while a generation kind is offer
 in the studio and as an agent tool. `ops` narrows what a generation row does
 (`text_to_image`, `image_to_image`, `text_to_video`, `image_to_video`) and can
 never exceed what its adapter implements; `params` is that adapter's own
-declaration, such as a ComfyUI workflow's node bindings. See `07-generation.md`.
+declaration, such as a ComfyUI workflow's node bindings. See `08-generation.md`.
 
 `enabled` and `pinned` are two different questions. `enabled` decides whether a
 model can be used at all; `pinned` decides whether it appears in the chat
 switcher. An aggregator offers hundreds of models and a person reaches for four,
-so bulk-added models arrive unpinned and are promoted one at a time.
+so bulk-added models arrive unpinned and are promoted one at a time. `agentTool`
+asks the same question of a generation row and answers it conservatively: the
+agent gets three generation tools bound to the profile's models, and a row with
+this flag gets a fourth named after itself, paid for in schema tokens on every
+turn. It is ignored on chat rows, as `pinned` is on generation rows.
 
 `GET /providers/:id/models` returns the live catalogue annotated for that
 choice: whether a model is already configured, and a suggested id, name, kind,
@@ -481,6 +485,8 @@ POST   /v1/files/search                   { query, mode?: "semantic"|"keyword"|"
 
 GET    /v1/images/:imageId?w=320          → bytes (WebP thumbnail when `w` is given)
 GET    /v1/videos/:videoId                → bytes, honours `Range`
+GET    /v1/images/:imageId/provenance     → Provenance
+GET    /v1/videos/:videoId/provenance     → Provenance
 ```
 
 One library holds everything the user owns: uploads, notes written in the app,
@@ -497,7 +503,7 @@ applied, so the number on a chip is what clicking it will show.
 already in the library answers with the row that holds them rather than opening a
 second one, so a client that re-sends the same PDF gets back the id it had before
 and no second copy is chunked, embedded and retrieved
-(`01-data-model.md §Files, chunks, vectors`). Images are deliberately exempt, and
+(`02-data-model.md §Files, chunks, vectors`). Images are deliberately exempt, and
 a re-uploaded image really does get a new row: an image's id is also the handle
 for its `image_assets` row, its metadata sidecar and its thumbnail cache, so
 collapsing two of them would save one file and dangle three references.
@@ -517,6 +523,18 @@ immutable and long-cached, so a revisit costs nothing.
 `GET /v1/videos/:videoId` answers a `Range` request with `206` and the asked-for
 slice, because a browser scrubbing a timeline sends one and a server that ignores
 it makes every seek download the whole file again.
+
+`/provenance` answers where one asset came from, and is assembled from two rows
+rather than stored: the asset row carries the backend and the parents, the job row
+carries the prompt and the parameters. Neither keeps the other's copy, so the two
+cannot disagree — and an image made before the queue existed still answers with
+what is on record, minus `job`.
+
+`job.repeatable` is the server's answer to whether the same request could be sent
+again: the model row still exists, is enabled, and still runs that operation. A
+client offering "draw another with these parameters" reads that flag rather than
+guessing, because a button that 404s is worse than no button. A deleted model is
+the ordinary way it goes false.
 
 A tool writes image bytes into the asset directory before Luma knows anything
 about them, so the directory is indexed in memory rather than scanned per

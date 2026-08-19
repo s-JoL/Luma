@@ -287,7 +287,7 @@ export function settingsRoutes(services: Services) {
  * turning it into a chat model — a toggle of `enabled` was enough to strip a
  * working ComfyUI binding. Ops are filtered to what the mode's adapter can
  * actually do, so a row cannot advertise an operation nothing will run
- * (`07-generation.md §Models grow a kind`).
+ * (`08-generation.md §Models grow a kind`).
  */
 function normalizeModel(input: ModelInput): ModelInput {
   const apiMode = API_MODE_IDS.includes(input.apiMode as ApiMode) ? input.apiMode : "openai-chat";
@@ -303,8 +303,10 @@ function normalizeModel(input: ModelInput): ModelInput {
     ops,
     params: input.params && typeof input.params === "object" ? input.params : null,
     enabled: input.enabled !== false,
-    // Nothing that cannot hold a conversation belongs in the chat switcher.
+    // Nothing that cannot hold a conversation belongs in the chat switcher, and
+    // nothing that holds one is offered to the agent as a thing it can call.
     pinned: generates ? false : input.pinned !== false,
+    agentTool: generates ? Boolean(input.agentTool) : false,
     reasoning: generates ? false : Boolean(input.reasoning),
     input: Array.isArray(input.input) && input.input.length ? input.input : ["text"],
     contextWindow: Math.max(1024, Number(input.contextWindow) || 128000),

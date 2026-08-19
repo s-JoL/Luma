@@ -17,6 +17,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Approval, Bootstrap, FileRecord, Profile, StoredMessage } from "@shared/types.ts";
 import { isChatKind } from "@shared/types.ts";
 import { api, followRun } from "../api.ts";
+import { askToNotify, notifyFinished } from "../notify.ts";
+import { assetIdOf, ProvenanceCard } from "../provenance.tsx";
 import { Markdown, prefetchKatex } from "../markdown.tsx";
 import {
   attachmentIdsOf,
@@ -173,6 +175,9 @@ export function Chat({
         if (abortRef.current === controller && openConversationRef.current === id) {
           abortRef.current = null;
           setRunning(false);
+          // A turn that drew three pictures took minutes, and the reader has
+          // usually gone elsewhere by the time it lands.
+          notifyFinished("回复完成", turnText(turn.snapshot()).trim().slice(0, 120));
           // The live turn is only swapped for the stored transcript once that
           // transcript is actually in hand; dropping it while the network is
           // down would blank an answer the reader was in the middle of.
@@ -284,6 +289,26 @@ export function Chat({
     if (thread && stickyRef.current) thread.scrollTop = thread.scrollHeight;
   }, [messages, live, pendingUser]);
 
+  /**
+   * An image decodes after the turn holding it has rendered, and the height it
+   * then claims shoves the newest output back off screen: the effect above has
+   * already run, and a layout change is not a state change that would run it
+   * again. A transcript records image ids and no dimensions, so there is nothing
+   * to reserve the space with in advance — the correction is made when the
+   * content resizes, which is the moment the picture takes its place.
+   */
+  const contentResize = useRef<ResizeObserver | null>(null);
+  const watchContent = useCallback((node: HTMLDivElement | null) => {
+    contentResize.current?.disconnect();
+    if (!node) return;
+    const observer = new ResizeObserver(() => {
+      const thread = threadRef.current;
+      if (thread && stickyRef.current) thread.scrollTop = thread.scrollHeight;
+    });
+    observer.observe(node);
+    contentResize.current = observer;
+  }, []);
+
   const turns = useMemo(() => buildTurns(messages), [messages]);
 
   /**
@@ -362,6 +387,8 @@ export function Chat({
 
     let targetId = conversationId;
     setRunning(true);
+    // Sending is the gesture a permission prompt needs behind it.
+    askToNotify();
     stickyRef.current = true;
     try {
       if (!targetId) {
@@ -569,7 +596,7 @@ export function Chat({
             <p className="max-w-md text-sm text-muted-foreground">可以联网搜索、检索你的文件、生成和编辑图片与视频。</p>
           </div>
         ) : (
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6" ref={watchContent}>
             {visibleTurns.map((turn, index) => (
               <TurnView
                 key={`${turn.id}-${index}`}
@@ -709,7 +736,13 @@ export function Chat({
         </div>
       </Modal>
 
-      {zoom ? <Lightbox src={zoom} onClose={() => setZoom("")} /> : null}
+      {zoom ? (
+        <Lightbox
+          src={zoom}
+          onClose={() => setZoom("")}
+          aside={assetIdOf(zoom) ? <ProvenanceCard assetId={assetIdOf(zoom)} /> : undefined}
+        />
+      ) : null}
     </>
   );
 }

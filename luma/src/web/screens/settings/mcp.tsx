@@ -67,7 +67,7 @@ export function McpSection({ reload }: { reload: () => Promise<void> }) {
     <>
       <Section
         title="MCP 服务器"
-        hint="本地子进程或远程 HTTP 服务器，它声明的工具会直接进入模型的工具表。"
+        hint="本地子进程或远程 HTTP 服务器，它声明的工具会直接进入对话模型的工具列表。"
         actions={
           <div className="flex gap-2">
             <Button size="sm" onClick={() => void act(() => api.reconnectMcp(), "已重连").then(refresh)}>
@@ -96,7 +96,7 @@ export function McpSection({ reload }: { reload: () => Promise<void> }) {
         {servers.length === 0 ? (
           <SectionBody>
             <p className="text-sm text-muted-foreground">
-              还没有 MCP 服务器。本地生成不需要它：图片与视频模型直接配在「模型」里。
+              还没有 MCP 服务器。生成不需要它：图片与视频后端就在这一页的上面。
             </p>
           </SectionBody>
         ) : null}

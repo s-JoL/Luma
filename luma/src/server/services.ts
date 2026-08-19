@@ -64,7 +64,7 @@ export function createServices(
   const jobs = new Jobs(store, vault);
   const runtime = new Runtime(store, config, vault, registry, retrieval, mcp, bus, sessions, jobs);
   // A render the backend still owns is rejoined rather than paid for twice
-  // (07-generation.md §Jobs).
+  // (08-generation.md §Jobs).
   const recovered = jobs.recover();
   if (recovered.rejoined || recovered.requeued || recovered.failed) {
     console.log(
