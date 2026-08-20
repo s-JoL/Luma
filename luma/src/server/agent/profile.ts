@@ -1,14 +1,13 @@
 /**
- * What a conversation runs under (`08-generation.md §Profiles`).
+ * What a conversation runs under (`03-generation.md §Profiles`).
  *
  * A profile *selects* from the deployment's configuration; it never re-states it.
  * Turning a capability on where the deployment has not configured it does
  * nothing, which is the rule the global switches already followed.
  *
- * With no profiles at all this resolves to exactly the old behaviour, so the
- * feature is inert until someone uses it. Generation models still fall back to
- * the first enabled one: adding an image model and finding the agent unable to
- * draw with it would be a dead end, not a safeguard.
+ * With no profiles at all this still fills generation tools from the deployment,
+ * so adding an image model and finding the agent unable to draw would be a dead
+ * end. The fallback prefers a keyed hosted backend over local Comfy.
  */
 import type { Capabilities, ModelSpec, Profile, PromptSettings } from "@shared/types.ts";
 import type { Config } from "../config.ts";
@@ -35,10 +34,21 @@ export interface ResolvedProfile {
 const enabledGeneration = (store: Store, kind: "image" | "video") =>
   store.listModels().filter((spec) => spec.enabled && spec.kind === kind && isRunnable(spec));
 
+/** Comfy is always configured. Prefer a hosted backend that actually has a key. */
+function preferReady(specs: ModelSpec[]) {
+  return (
+    specs.find((spec) => spec.apiMode !== "comfy-workflow" && spec.configured !== false) ??
+    specs.find((spec) => spec.apiMode === "comfy-workflow") ??
+    specs[0]
+  );
+}
+
 function pick(store: Store, id: string, kind: "image" | "video") {
   const spec = id ? store.getModel(id) : undefined;
-  if (spec && spec.enabled && isRunnable(spec) && spec.kind === kind) return spec;
-  return undefined;
+  if (!spec || !spec.enabled || !isRunnable(spec) || spec.kind !== kind) return undefined;
+  // A hosted row with no key is not a choice, it is a broken binding.
+  if (spec.apiMode !== "comfy-workflow" && spec.configured === false) return undefined;
+  return spec;
 }
 
 export function resolveProfile(
@@ -53,11 +63,11 @@ export function resolveProfile(
 
   const images = enabledGeneration(store, "image");
   const videos = enabledGeneration(store, "video");
-  const image = pick(store, profile?.imageModelId ?? "", "image") ?? images[0];
+  const image = pick(store, profile?.imageModelId ?? "", "image") ?? preferReady(images);
   const edit =
     pick(store, profile?.editModelId ?? "", "image") ??
     (image && supportsOp(image, "image_to_image") ? image : images.find((spec) => supportsOp(spec, "image_to_image")));
-  const video = pick(store, profile?.videoModelId ?? "", "video") ?? videos[0];
+  const video = pick(store, profile?.videoModelId ?? "", "video") ?? preferReady(videos);
   // Sorted by id rather than by the catalogue's order, so adding an unrelated
   // model cannot reshuffle the tools and cost the provider's prompt cache.
   const extras = [...images, ...videos].filter((spec) => spec.agentTool).sort((a, b) => a.id.localeCompare(b.id));

@@ -1,5 +1,6 @@
 import { createModels, createProvider, type Model, type MutableModels } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
@@ -12,6 +13,7 @@ import { providerAuth, providerCredential } from "./auth.ts";
 function apiFor(mode: ApiMode) {
   if (mode === "openai-responses") return openAIResponsesApi();
   if (mode === "anthropic-messages") return anthropicMessagesApi();
+  if (mode === "google-generative") return googleGenerativeAIApi();
   return openAICompletionsApi();
 }
 
@@ -89,11 +91,15 @@ export class ModelRegistry {
   private register(models: MutableModels, provider: Provider, mode: ApiMode, specs: ModelSpec[]) {
     const owned = specs.filter((spec) => spec.providerId === provider.id && spec.apiMode === mode);
     if (!owned.length) return;
-    // OpenAI-style gateways expect the version in the base URL, while the
-    // Anthropic client appends `/v1/messages` itself. One gateway usually
-    // serves both from the same host, so the stored URL is normalised here.
+    // Each client wants the version in a different place. OpenAI-style gateways
+    // expect it in the base URL; the Anthropic client appends `/v1/messages`
+    // itself; Google's asks for its own `/v1beta` and is told not to append a
+    // version, so the base URL has to carry that one. One gateway usually serves
+    // all of them from the same host, so the stored URL is normalised here.
     const trimmed = provider.baseUrl.replace(/\/+$/, "");
-    const baseUrl = mode === "anthropic-messages" ? trimmed.replace(/\/v1$/, "") : trimmed;
+    const hostOnly = trimmed.replace(/\/v1(beta)?$/, "");
+    const baseUrl =
+      mode === "anthropic-messages" ? hostOnly : mode === "google-generative" ? `${hostOnly}/v1beta` : trimmed;
     const providerModels = owned.map((spec) => ({
       id: spec.model,
       name: spec.name,

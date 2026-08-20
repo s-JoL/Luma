@@ -5,12 +5,24 @@
  * rejections without touching any real transcript.
  *
  *   node --import tsx scripts/audit-payload.ts [modelId]
+ *
+ * It runs on a scratch data directory by default, because it belongs to the
+ * audit chain and an audit must not open the live databases. Point
+ * `LUMA_DATA_DIR` at a real instance to shape payloads for the models that
+ * instance actually has configured.
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { isChatKind, type ModelSpec } from "@shared/types.ts";
-import { applyModelParameters } from "../src/server/models/params.ts";
-import { createServices } from "../src/server/services.ts";
+
+process.env.LUMA_DATA_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), "luma-payload-"));
+
+// Imported after the data directory is settled, since `env.ts` reads it on load.
+const { applyModelParameters } = await import("../src/server/models/params.ts");
+const { createServices } = await import("../src/server/services.ts");
 
 const services = createServices();
 const only = process.argv[2] ?? "";
@@ -132,6 +144,69 @@ function contractViolations(spec: ModelSpec, payload: Record<string, unknown> | 
     ? []
     : [`thinking.type is "${thinking.type}"; ${spec.model} supports the current "adaptive" form`];
 }
+
+/**
+ * Shaping that must hold without a provider, a key, or a configured row, so it
+ * is asserted directly rather than read off a captured payload. Every check
+ * below is about the same thing: `safetySettings` is the one request field whose
+ * absence changes what the model is willing to answer, and it reaches only one
+ * protocol.
+ */
+function checkSafetyShaping() {
+  const base = {
+    id: "probe",
+    providerId: "probe",
+    name: "Probe",
+    model: "gemini-3.7-flash",
+    kind: "chat" as const,
+    enabled: true,
+    pinned: false,
+    reasoning: false,
+    input: ["text" as const],
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+    thinkingLevel: "off" as const,
+    librechatCompat: false,
+    agentTool: false,
+    sortOrder: 0,
+    ops: [],
+  };
+
+  const google = applyModelParameters({ contents: [] }, { ...base, apiMode: "google-generative" } as ModelSpec) as {
+    config?: { safetySettings?: Array<{ category: string; threshold: string }> };
+  };
+  const settings = google.config?.safetySettings ?? [];
+  if (!settings.length) violations.push("google-generative sent no safetySettings, so the gateway's default filter applies");
+  if (settings.some((entry) => entry.threshold !== "OFF")) {
+    violations.push(`a category is not OFF: ${settings.map((entry) => entry.threshold).join(",")}`);
+  }
+  if (!settings.some((entry) => entry.category === "HARM_CATEGORY_SEXUALLY_EXPLICIT")) {
+    violations.push("the category this deployment's persona actually trips is not in the list");
+  }
+
+  // A row that states its own policy keeps it: the default is Luma declining to
+  // add a filter, not Luma insisting there be none.
+  const strict = [{ category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_LOW_AND_ABOVE" }];
+  const overridden = applyModelParameters(
+    { contents: [] },
+    { ...base, apiMode: "google-generative", params: { safetySettings: strict } } as ModelSpec,
+  ) as { config?: { safetySettings?: unknown } };
+  if (JSON.stringify(overridden.config?.safetySettings) !== JSON.stringify(strict)) {
+    violations.push("a row's own safetySettings were overwritten by the default");
+  }
+
+  // On the OpenAI-compatible path the field is accepted and ignored by the
+  // gateway, so sending it would only be a lie about what is being enforced.
+  const compatible = applyModelParameters({ messages: [] }, { ...base, apiMode: "openai-chat" } as ModelSpec) as Record<
+    string,
+    unknown
+  >;
+  if ("config" in compatible || "safetySettings" in compatible || "safety_settings" in compatible) {
+    violations.push("safety settings leaked onto a protocol that ignores them");
+  }
+}
+
+checkSafetyShaping();
 
 const models = services.store
   .listModels()

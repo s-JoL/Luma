@@ -30,6 +30,8 @@ export interface WebSearchQuery {
 
 export interface WebSearchContext {
   apiKey: string;
+  /** Instance root for self-hosted backends. Ignored by Tavily. */
+  baseUrl: string;
   signal?: AbortSignal;
 }
 
@@ -44,7 +46,7 @@ export interface WebSearchResult {
  * adapters (`src/server/generation/`). A second backend — Brave, SearXNG, Exa,
  * an OpenAI-compatible search relay — is one object registered in `ADAPTERS`,
  * because everything above this line is the tool's schema and output format,
- * which `04-tools.md §1` fixes regardless of who answers.
+ * which `04-capabilities.md §1` fixes regardless of who answers.
  */
 export interface WebSearchAdapter {
   /** Matches `capabilities.web.provider`, so the configuration names its adapter. */
@@ -168,7 +170,42 @@ const tavilyAdapter: WebSearchAdapter = {
   },
 };
 
-const ADAPTERS = new Map<string, WebSearchAdapter>([tavilyAdapter].map((adapter) => [adapter.id, adapter]));
+const searxngAdapter: WebSearchAdapter = {
+  id: "searxng",
+  requiresKey: false,
+  async search(query, ctx) {
+    const root = ctx.baseUrl.replace(/\/+$/, "");
+    if (!root) throw new Error("SearXNG is selected but no instance URL is configured");
+    const categories = query.images ? "images" : query.topic === "news" ? "news" : "general";
+    const url = new URL("search", `${root}/`);
+    url.searchParams.set("q", query.query);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("categories", categories);
+    url.searchParams.set("language", "all");
+    if (query.country) url.searchParams.set("language", query.country);
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: ctx.signal,
+    });
+    if (!response.ok) throw new Error(`Web search failed (${response.status})`);
+    const data = (await response.json()) as { results?: Array<Record<string, unknown>> };
+    const rows = (data.results ?? []).slice(0, query.maxResults).map((item) => ({
+      title: String(item.title ?? ""),
+      url: String(item.url ?? item.img_src ?? ""),
+      content: String(item.content ?? item.img_src ?? ""),
+      published_date: item.publishedDate ? String(item.publishedDate) : undefined,
+      source: hostname(String(item.url ?? item.img_src ?? "")),
+    }));
+    const images = query.images
+      ? (data.results ?? []).map((item) => item.thumbnail_src ?? item.img_src ?? item.url).filter(Boolean)
+      : [];
+    return { rows, images };
+  },
+};
+
+const ADAPTERS = new Map<string, WebSearchAdapter>(
+  [tavilyAdapter, searxngAdapter].map((adapter) => [adapter.id, adapter]),
+);
 
 /** The adapter a deployment gets when its configuration names none, or names one that is gone. */
 const DEFAULT_PROVIDER = "tavily";
@@ -178,7 +215,7 @@ const DEFAULT_PROVIDER = "tavily";
  * in a source's block so the metadata stays together above it, and it is not
  * truncated here: a character cap charges a Chinese page three times an English
  * one and cuts a table in half, and pi already bounds a tool result by lines and
- * bytes on a boundary it can name (`04-tools.md §9`).
+ * bytes on a boundary it can name (`04-capabilities.md §9`).
  */
 function formatWebResults(turn: number, rows: WebRow[], sourceType: "search" | "news", pages?: Map<string, string>) {
   if (!rows.length) return "";
@@ -199,8 +236,13 @@ function formatWebResults(turn: number, rows: WebRow[], sourceType: "search" | "
   return `\n=== ${title} ===\n\n${formatted.join("\n")}`;
 }
 
-export function webSearchTool(getApiKey: () => string | undefined, provider = DEFAULT_PROVIDER): AgentTool {
+export function webSearchTool(options: {
+  getApiKey: () => string | undefined;
+  provider?: string;
+  baseUrl?: string;
+}): AgentTool {
   let turnCounter = 0;
+  const provider = options.provider || DEFAULT_PROVIDER;
   return {
     name: "web_search",
     label: "web_search",
@@ -236,13 +278,13 @@ export function webSearchTool(getApiKey: () => string | undefined, provider = DE
       };
       const turn = turnCounter++;
       const adapter = ADAPTERS.get(provider) ?? ADAPTERS.get(DEFAULT_PROVIDER)!;
-      const apiKey = getApiKey();
+      const apiKey = options.getApiKey();
       if (adapter.requiresKey && !apiKey) {
         throw new Error(`Web search is selected but the ${adapter.id} API key is not configured`);
       }
 
       const maxResults = Math.max(1, Math.min(20, Math.round(args.max_results ?? 5)));
-      const ctx: WebSearchContext = { apiKey: apiKey ?? "", signal };
+      const ctx: WebSearchContext = { apiKey: apiKey ?? "", baseUrl: options.baseUrl ?? "", signal };
       const asked = { query: args.query, maxResults, date: args.date, country: args.country };
 
       // LibreChat always runs the general search, then adds independent

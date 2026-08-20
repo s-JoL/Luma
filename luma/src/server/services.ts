@@ -58,13 +58,13 @@ export function createServices(
 
   const registry = new ModelRegistry(store, vault);
   const retrieval = new Retrieval(store, config, vault);
-  const mcp = new McpPool(store, vault, config);
+  const mcp = new McpPool(store, vault);
   const bus = new EventBus();
   const sessions = new Sessions(options.sessionsFile ?? paths.sessionsDb);
   const jobs = new Jobs(store, vault);
   const runtime = new Runtime(store, config, vault, registry, retrieval, mcp, bus, sessions, jobs);
   // A render the backend still owns is rejoined rather than paid for twice
-  // (08-generation.md §Jobs).
+  // (03-generation.md §Jobs).
   const recovered = jobs.recover();
   if (recovered.rejoined || recovered.requeued || recovered.failed) {
     console.log(

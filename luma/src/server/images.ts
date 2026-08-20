@@ -48,9 +48,10 @@ const EXTENSIONS: Record<string, string> = {
 };
 
 /**
- * The image MCP resolves an edit source by reading this sidecar, so anything
- * that lands in the asset directory has to write one or it can be shown but
- * never edited.
+ * The bytes on disk say nothing about where they came from, so provenance is
+ * written beside them: what made the picture, from which parents, and what it
+ * weighed. Anything that lands in the asset directory writes one, which is what
+ * lets the file be identified again after the row that described it is gone.
  */
 export function writeImageSidecar(
   imageId: string,

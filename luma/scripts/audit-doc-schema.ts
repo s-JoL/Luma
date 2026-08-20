@@ -1,5 +1,5 @@
 /**
- * Compares the SQL in `docs/02-data-model.md` against `schema.sql`, so the
+ * Compares the SQL in `docs/01-architecture.md` against `schema.sql`, so the
  * document that explains the database cannot quietly describe a different one.
  * Only tables the doc chooses to spell out are checked, and only their column
  * names: the doc abbreviates types deliberately.
@@ -9,7 +9,7 @@
 import fs from "node:fs";
 
 const schema = fs.readFileSync("src/server/store/schema.sql", "utf8");
-const doc = fs.readFileSync("docs/02-data-model.md", "utf8");
+const doc = fs.readFileSync("docs/01-architecture.md", "utf8");
 
 /** Column names from a `create table` body, ignoring constraints and comments. */
 function columns(body: string) {

@@ -77,8 +77,10 @@ export class Retrieval {
       const client = this.client();
       if (!client) {
         // Keyword search still works, so a missing embedding key degrades the
-        // feature instead of rejecting the upload.
-        this.store.setFileEmbeddingStatus(file.id, "failed", "Embedding provider is not configured");
+        // feature instead of rejecting the upload. `indexed` is that state:
+        // chunks exist, vectors do not, and the library page must not call it a
+        // failure.
+        this.store.setFileEmbeddingStatus(file.id, "indexed");
         return { chunks: chunks.length, embedded: 0 };
       }
       const vectors = await client.embed(chunks.map((chunk) => chunk.text));
@@ -103,17 +105,38 @@ export class Retrieval {
    * stays at 10 — LibreChat asks for 4 and Open WebUI 3–5, but they are feeding
    * far smaller windows than the 256k–1M ones here.
    */
-  async searchFiles(query: string, mode: FileSearchMode, limit = 10): Promise<SearchResult> {
+  /**
+   * `fileIds` narrows the search to named documents.
+   *
+   * Without it every search was library-wide, which is right for "find me the
+   * clause about termination" and wrong for "what does the file I just attached
+   * say" — that question came back with passages from unrelated documents. The
+   * filter is applied after retrieval rather than inside the two rankers,
+   * because both of them take a limit: filtering afterwards costs a wider fetch,
+   * while filtering inside would mean rewriting the FTS and vector queries to
+   * carry an id set. The wider fetch is bounded and the rewrite is not.
+   */
+  async searchFiles(
+    query: string,
+    mode: FileSearchMode,
+    limit = 10,
+    fileIds?: string[],
+  ): Promise<SearchResult> {
     const normalized = query.trim();
     const resultLimit = Math.min(50, Math.max(1, limit));
     const index = this.store.fileIndexSummary();
     if (!normalized) return { mode, results: [], index };
 
+    const scope = fileIds?.length ? new Set(fileIds) : undefined;
     // Three times the answer from each half, not twice: reciprocal rank fusion
     // earns its keep on what one retriever ranks deep and the other ranks high,
-    // and a passage neither list reaches cannot be fused at all.
-    const keyword = mode === "semantic" ? [] : this.keywordSearch(normalized, resultLimit * 3);
-    const semantic = mode === "keyword" ? [] : await this.semanticSearch(normalized, resultLimit * 3);
+    // and a passage neither list reaches cannot be fused at all. A scoped search
+    // fetches deeper still, since the ranked lists are dominated by whatever the
+    // rest of the library had to say.
+    const reach = scope ? resultLimit * 20 : resultLimit * 3;
+    const within = (hits: SearchHit[]) => (scope ? hits.filter((hit) => scope.has(hit.id)) : hits);
+    const keyword = mode === "semantic" ? [] : within(this.keywordSearch(normalized, reach));
+    const semantic = mode === "keyword" ? [] : within(await this.semanticSearch(normalized, reach));
 
     const merged = new Map<string, SearchHit>();
     keyword.forEach((hit, rank) => {

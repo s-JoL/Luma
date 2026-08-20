@@ -1,5 +1,5 @@
 ﻿import path from "node:path";
-import type { Capabilities, PromptSettings } from "@shared/types.ts";
+import type { Capabilities, ModelSpec, PromptSettings } from "@shared/types.ts";
 import { isChatKind, isMemoryKey } from "@shared/types.ts";
 import { paths } from "./env.ts";
 import type { SecretVault } from "./crypto/secrets.ts";
@@ -44,7 +44,7 @@ const DEFAULT_CAPABILITIES: Capabilities = {
     charLimit: 10000,
   },
   files: { enabled: true, searchEnabled: true, mode: "hybrid" },
-  web: { enabled: true, provider: "tavily", hasTavilyKey: false },
+  web: { enabled: true, provider: "tavily", baseUrl: "", hasTavilyKey: false },
   coding: { read: false, write: false, shell: false, workspace: "" },
   embedding: {
     enabled: true,
@@ -60,7 +60,7 @@ const DEFAULT_CAPABILITIES: Capabilities = {
     chunkOverlap: 150,
     hasKey: false,
   },
-  studio: { enabled: true, servers: [] },
+  studio: { enabled: true },
 };
 
 const DEFAULT_PROMPTS: PromptSettings = {
@@ -94,6 +94,7 @@ export class Config {
       web: {
         ...DEFAULT_CAPABILITIES.web,
         ...stored.web,
+        baseUrl: typeof stored.web?.baseUrl === "string" ? stored.web.baseUrl : "",
         hasTavilyKey: this.vault.has(SECRET.tavily),
       },
       coding: {
@@ -106,7 +107,7 @@ export class Config {
         ...stored.embedding,
         hasKey: this.vault.has(SECRET.embedding),
       },
-      studio: { ...DEFAULT_CAPABILITIES.studio, ...stored.studio },
+      studio: { enabled: Boolean((stored.studio ?? DEFAULT_CAPABILITIES.studio).enabled) },
     };
   }
 
@@ -140,6 +141,7 @@ export class Config {
         // server side of the tool layer, and an id it does not know falls back to
         // the default at call time rather than being refused here.
         provider: String(web.provider || DEFAULT_CAPABILITIES.web.provider),
+        baseUrl: typeof web.baseUrl === "string" ? web.baseUrl.trim().replace(/\/+$/, "") : "",
         hasTavilyKey: current.web.hasTavilyKey,
       },
       coding: {
@@ -169,9 +171,6 @@ export class Config {
       },
       studio: {
         enabled: Boolean(studio.enabled),
-        servers: (Array.isArray(studio.servers) ? studio.servers : []).filter(
-          (id): id is string => typeof id === "string",
-        ),
       },
     };
     if (!next.memory.suggestedKeys.length) next.memory.suggestedKeys = SUGGESTED_MEMORY_KEYS;
@@ -197,8 +196,10 @@ export class Config {
 
   defaultModelId(): string {
     const stored = this.store.getSetting<string>("defaultModelId", "");
-    if (stored && this.store.getModel(stored)?.enabled) return stored;
-    return this.store.listModels().find((model) => model.enabled && isChatKind(model.kind))?.id ?? "";
+    const usable = (model: ModelSpec | undefined) =>
+      Boolean(model?.enabled && model.configured && isChatKind(model.kind));
+    if (usable(this.store.getModel(stored))) return stored;
+    return this.store.listModels().find((model) => usable(model))?.id ?? "";
   }
 
   setDefaultModelId(id: string) {

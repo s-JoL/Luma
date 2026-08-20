@@ -11,6 +11,7 @@
       "scheduler": "8.inputs.scheduler",
       "denoise": "8.inputs.denoise"
     },
+    "promptHints": "This checkpoint answers strongly to photographic vocabulary, so naming the apparatus is worth more here than adjectives. Camera bodies: shot on Polaroid SX-70, Kodak Funsaver, GoPro Hero, Canon EOS 5D, Leica T. Genres: analog photo, candid photo, amateur photo, glamour photography, street fashion photography. Light: soft lighting, dramatic lighting, low key lighting, bright flash photography, warm golden hour lighting, neon lighting. Film: Ilford HP5 Plus, Lomochrome color film, Fujicolor Pro. Texture: film grain, bokeh, dreamy haze, technicolor, underexposed. Photographer names also read as a look: Alessio Albi, Martin Schoeller, Miles Aldridge, Oleg Oprisco, Tim Walker. Pick a few that serve the frame rather than stacking all of them, and use no weighting syntax and no quality slogans.",
     "controls": {
       "steps": {
         "type": "integer",

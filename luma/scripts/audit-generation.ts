@@ -6,7 +6,7 @@
  * ComfyUI, an OpenAI-shaped image API and an asynchronous video API, which is
  * what lets this assert on submit/poll/fetch, cancellation and restart recovery
  * without a GPU or a bill. The claims tested are the ones in
- * `08-generation.md §What must be tested`.
+ * `03-generation.md §What must be tested`.
  *
  *   node --import tsx scripts/audit-generation.ts
  */
@@ -25,7 +25,7 @@ const { Store } = await import("../src/server/store/store.ts");
 const { SecretVault } = await import("../src/server/crypto/secrets.ts");
 const { SECRET } = await import("../src/server/config.ts");
 const { Jobs } = await import("../src/server/generation/jobs.ts");
-const { opsOf, schemaOf, supportsOp } = await import("../src/server/generation/index.ts");
+const { opsOf, schemaOf, studioPriority, supportsOp } = await import("../src/server/generation/index.ts");
 const { generationTools } = await import("../src/server/tools/generation.ts");
 const { jobProviderId } = await import("../src/server/store/store.ts");
 const { classifyModel } = await import("../src/server/models/catalogue.ts");
@@ -146,6 +146,7 @@ interface HostedState {
   videoStatus: string[];
   videoPolls: number;
   videoSubmits: number;
+  videoLastBody: string;
   cancelledVideos: string[];
   /** Drops the connection on the next request to this route, once. */
   dropNext: Set<string>;
@@ -157,6 +158,7 @@ const hostedState: HostedState = {
   videoStatus: ["queued", "in_progress", "completed"],
   videoPolls: 0,
   videoSubmits: 0,
+  videoLastBody: "",
   cancelledVideos: [],
   dropNext: new Set(),
 };
@@ -191,7 +193,7 @@ const hostedServer = http.createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === "/videos") {
     hostedState.videoSubmits += 1;
-    await body(request);
+    hostedState.videoLastBody = await body(request);
     return send(200, { id: "vid-remote-1", status: "queued" });
   }
   if (request.method === "POST" && url.pathname.endsWith("/cancel")) {
@@ -415,6 +417,25 @@ await check("a video submit is never retried", async () => {
   return "one submit, one failure: a second would queue a second paid render";
 });
 
+await check("Gemini-shaped providers see string enums, not integer ones", () => {
+  const tools = generationTools({ jobs, store, conversationId: "c1", video: spec("hosted-video"), uploads: [] });
+  const tool = tools.find((entry) => entry.name === "generate_video")!;
+  const duration = (tool.parameters as { properties: { duration?: { type?: string; enum?: unknown[] } } }).properties
+    .duration!;
+  assert(duration.type === "string", `duration type ${duration.type}`);
+  assert(duration.enum?.[0] === "5", `duration enum ${JSON.stringify(duration.enum)}`);
+  return "4-second clips stay numbers in the studio and strings in the tool";
+});
+
+await check("the studio defaults to a keyed hosted backend over local Comfy", () => {
+  const hosted = spec("hosted-image");
+  const local = spec("local");
+  assert(studioPriority(hosted) < studioPriority(local), "Seedream should sort before Lustify");
+  const ordered = [local, hosted].sort((a, b) => studioPriority(a) - studioPriority(b));
+  assert(ordered[0]?.id === "hosted-image", `first ${ordered[0]?.id}`);
+  return "catalogue order matches the agent's image-tool fallback";
+});
+
 await check("the model's tool is the studio's form minus the knobs only a person sets", () => {
   const form = schemaOf(spec("local"), "text_to_image");
   const tools = generationTools({ jobs, store, conversationId: "c1", image: spec("local"), uploads: [] });
@@ -440,6 +461,41 @@ await check("the model's tool is the studio's form minus the knobs only a person
   const demanded = form.required ?? [];
   assert(!withheld.some((name) => demanded.includes(name)), "a call requires something only a person can send");
   return `${offered.length} offered to the model, ${withheld.length} kept for the form, plus intent`;
+});
+
+await check("a backend's own prompting advice rides on its schema, not on the global prompt", () => {
+  // The split this pins: guidance that stops being true when the model changes
+  // belongs to the model, and the only place both audiences read is the prompt
+  // field. A row carries it; a ComfyUI graph carries its own, because the advice
+  // belongs to whichever checkpoint the graph loads.
+  const rowHint = "Takes one dense natural-language paragraph, not tags.";
+  store.upsertModel({ ...spec("hosted-image"), params: { ...spec("hosted-image").params, promptHints: rowHint } });
+  const hosted = schemaOf(spec("hosted-image"), "text_to_image");
+  assert(hosted.properties?.prompt?.description === rowHint, "a row's prompt hints never reached its schema");
+
+  const graphHint = "This checkpoint answers to film stocks and camera bodies.";
+  const file = path.join(paths.workflows, "audit.json");
+  const graph = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+  fs.writeFileSync(file, JSON.stringify({ ...graph, luma: { promptHints: graphHint } }));
+  const local = schemaOf(spec("local"), "text_to_image");
+  assert(local.properties?.prompt?.description === graphHint, "a graph's prompt hints never reached its schema");
+  fs.writeFileSync(file, JSON.stringify(graph));
+
+  // A hint is for the model, and the studio has to keep rendering the field. A
+  // person-facing title is what stops the web form printing the model's copy.
+  assert(hosted.properties?.prompt?.title, "the prompt field lost the title a person reads");
+
+  // And the model has to actually receive it: `forModel` narrows the schema, so a
+  // description dropped there would make the whole arrangement decorative.
+  const [tool] = generationTools({ jobs, store, conversationId: "c1", image: spec("hosted-image"), uploads: [] });
+  const offered = (tool!.parameters as { properties: Record<string, { description?: string }> }).properties;
+  assert(offered.prompt?.description === rowHint, "the tool the model sees dropped the hints");
+
+  // Video says what its frame and its length mean, which no global prompt can:
+  // the values are the backend's.
+  const video = schemaOf(spec("hosted-video"), "text_to_video");
+  assert(video.properties?.duration?.description, "the duration field explains nothing about choosing one");
+  return "row and graph hints both reach the schema and the tool";
 });
 
 await check("an operation that consumes an image demands one, an optional frame stays optional", () => {
@@ -488,6 +544,28 @@ await check("one video tool covers both starting from text and from a frame", as
   assert(job.op === "image_to_video", `the op was ${job.op}`);
   assert(/^vid_/.test(result.details.structuredContent.video_id), "the tool returned no video id");
   return "naming a first frame switches the op, not the tool";
+});
+
+await check("a JSON video submit sends every source, not only the first", async () => {
+  const extra = await saveImageBytes(store, PNG, {
+    mime: "image/png",
+    provider: "hosted",
+    model: "seed",
+    width: 1,
+    height: 1,
+  });
+  store.upsertModel({ ...spec("hosted-video"), params: { durations: [5, 10], maxSources: 2 } });
+  hostedState.videoPolls = hostedState.videoStatus.length - 1;
+  const job = await jobs.run({
+    modelId: "hosted-video",
+    op: "image_to_video",
+    params: { prompt: "two frames", source_image_id: seedImage, additional_source_image_ids: [extra] },
+  });
+  assert(job.status === "succeeded", `job ${job.status}: ${job.error}`);
+  const payload = JSON.parse(hostedState.videoLastBody) as { image?: unknown };
+  assert(Array.isArray(payload.image) && (payload.image as unknown[]).length === 2, `submitted ${hostedState.videoLastBody}`);
+  store.upsertModel({ ...spec("hosted-video"), params: { durations: [5, 10] } });
+  return "two data-URI sources in one JSON body";
 });
 
 await check("the tool hands the model the picture, and the transcript a reference", async () => {
@@ -562,16 +640,16 @@ await check("view_image is what puts pixels in front of the model", async () => 
   return "a named id resolves, an invented one does not";
 });
 
-await check("a deployment with no profiles behaves exactly as before", async () => {
+await check("a deployment with no profiles still offers a working image backend", async () => {
   const { resolveProfile } = await import("../src/server/agent/profile.ts");
   const { Config } = await import("../src/server/config.ts");
   const config = new Config(store, vault);
   const resolved = resolveProfile(store, config, {});
   assert(!resolved.profile, "a conversation without a profile invented one");
-  assert(resolved.image?.id === "local", `fell back to ${resolved.image?.id ?? "nothing"}`);
-  assert(resolved.edit?.id === "local-edit", `no editor was found: ${resolved.edit?.id ?? "none"}`);
+  assert(resolved.image?.id === "hosted-image", `fell back to ${resolved.image?.id ?? "nothing"}`);
+  assert(resolved.edit?.id === "hosted-image", `editor was ${resolved.edit?.id ?? "none"}`);
   assert(resolved.prompts.globalPrompt === config.prompts().globalPrompt, "the global prompt changed");
-  return "generation still works, prompts unchanged";
+  return "keyed hosted, not the first Comfy row";
 });
 
 await check("a model asked for by name gets a tool of its own, and never twice", async () => {
@@ -595,16 +673,15 @@ await check("a model asked for by name gets a tool of its own, and never twice",
   const before = toolsNow();
   assert(before.length === 3, `an unflagged deployment offered ${before.join(", ")}`);
 
-  store.upsertModel({ ...spec("hosted-image"), agentTool: true });
-  const named = toolsNow();
-  assert(named.includes("generate_image_hosted_image"), `no named draw tool in ${named.join(", ")}`);
-  assert(named.includes("edit_image_hosted_image"), `no named edit tool in ${named.join(", ")}`);
-
-  // "local" already carries `generate_image`; asking for it by name as well would
-  // hand the model two tools that do one thing.
   store.upsertModel({ ...spec("local"), agentTool: true });
+  const named = toolsNow();
+  assert(named.includes("generate_image_local"), `no named draw tool in ${named.join(", ")}`);
+
+  // hosted-image already carries `generate_image`; asking for it by name as well
+  // would hand the model two tools that do one thing.
+  store.upsertModel({ ...spec("hosted-image"), agentTool: true });
   const both = toolsNow();
-  assert(!both.some((name) => name.startsWith("generate_image_local")), `local was offered twice: ${both.join(", ")}`);
+  assert(!both.some((name) => name.startsWith("generate_image_hosted")), `default was offered twice: ${both.join(", ")}`);
   assert(new Set(both).size === both.length, `duplicate tool name in ${both.join(", ")}`);
 
   store.upsertModel({ ...spec("hosted-image"), agentTool: false });
@@ -655,13 +732,33 @@ await check("discovery suggests a kind, and everything else follows from it", ()
 
   const vision = classifyModel("gemini-2.5-pro", "hosted");
   assert(vision.reasoning && vision.input.includes("image"), "a reasoning vision model lost both flags");
+  assert(vision.contextWindow === 1_048_576, `gemini was guessed at ${vision.contextWindow}`);
 
   // An id no pattern knows still has to produce a row the user can correct.
   const unknown = classifyModel("something-shipped-last-tuesday", "hosted");
   assert(unknown.kind === "chat" && !unknown.ops.length, `an unrecognised id became ${unknown.kind}`);
 
-  const venice = classifyModel("lustify-sdxl", "venice", "https://api.venice.ai/api/v1");
-  assert(venice.apiMode === "venice-image", `venice got ${venice.apiMode}`);
+  // Every hosted image API Luma speaks is OpenAI-shaped, whatever the gateway.
+  const hostedImage = classifyModel("lustify-sdxl", "gateway", "https://example.test/api/v1");
+  assert(hostedImage.apiMode === "openai-images", `a hosted image id got ${hostedImage.apiMode}`);
+
+  // Gemini is suggested on its own protocol: `safetySettings` exists nowhere
+  // else, and without it the gateway answers ordinary requests with
+  // content_filter.
+  const gemini = classifyModel("gemini-3.7-flash", "hosted");
+  assert(gemini.apiMode === "google-generative", `gemini got ${gemini.apiMode}`);
+  assert(gemini.kind === "chat", `gemini became ${gemini.kind}`);
+
+  const grok = classifyModel("grok-4.6", "hosted");
+  assert(grok.kind === "chat" && grok.apiMode === "openai-chat", `grok became ${grok.kind}/${grok.apiMode}`);
+  assert(grok.contextWindow === 500_000, `grok was guessed at ${grok.contextWindow}`);
+  assert(grok.input.includes("image"), "grok 4.6 should accept images");
+  assert(grok.name === "Grok 4.6", `grok display name was ${grok.name}`);
+
+  const claudeNative = classifyModel("claude-opus-4-6", "p", "https://api.anthropic.com/v1");
+  assert(claudeNative.apiMode === "anthropic-messages", `anthropic host got ${claudeNative.apiMode}`);
+  const claudeViaGateway = classifyModel("claude-opus-4-6", "p", "https://api.example.com/v1");
+  assert(claudeViaGateway.apiMode === "openai-chat", `aggregator claude got ${claudeViaGateway.apiMode}`);
   return "kind, ops, protocol and input all follow from the id";
 });
 
@@ -672,6 +769,13 @@ await check("a row's declared ops are trusted, but not beyond its kind", () => {
   assert(supportsOp(spec("hosted-video"), "text_to_video"), "the video op was lost");
   store.upsertModel({ ...spec("hosted-video"), ops: ["text_to_video", "image_to_video"] });
   return "a video row cannot advertise an image op";
+});
+
+await check("an empty ops list still runs the family's first op", () => {
+  store.upsertModel({ ...spec("hosted-image"), ops: [] });
+  assert(opsOf(spec("hosted-image")).join() === "text_to_image", `fell back to ${opsOf(spec("hosted-image")).join(", ")}`);
+  store.upsertModel({ ...spec("hosted-image"), ops: ["text_to_image", "image_to_image"] });
+  return "repeatable and the catalogue agree on what an empty row can do";
 });
 
 jobs.close();

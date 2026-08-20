@@ -8,10 +8,20 @@
  * rather than to the live server on 8090.
  *
  *   node --import tsx scripts/e2e.ts [only-substring]
+ *
+ * A hosted key is used when present (`COMETAPI_KEY`, or the server's vault).
+ * Without one a local OpenAI-compatible stub is registered so the agent loop
+ * still runs. `LUMA_E2E_LIVE=1` forces the server's default model;
+ * `LUMA_E2E_STUB=1` forces the stub even when a hosted key exists.
+ *
+ * Everything optional is skipped rather than failed: web search without a key,
+ * an image backend that is not running, a video model nobody configured. A
+ * machine with only a chat key must still be able to run this suite green.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { startOpenAiStub, type OpenAiStub } from "./stub-openai.ts";
 
 const BASE = process.env.LUMA_BASE ?? "http://127.0.0.1:8095/v1";
 const CODE = process.env.LUMA_ACCESS_CODE ?? "AUDITCODE";
@@ -185,6 +195,8 @@ interface ModelRow {
   ops?: string[];
   enabled: boolean;
   configured: boolean;
+  providerId?: string;
+  apiMode?: string;
 }
 
 interface JobRow {
@@ -199,13 +211,133 @@ interface JobRow {
 /** A row written before `kind` existed is a chat model, same as the server reads it. */
 const kindOf = (model: ModelRow) => model.kind ?? "chat";
 
-async function generationModel(): Promise<ModelRow> {
+async function generationCandidates(): Promise<ModelRow[]> {
   const catalogue = await call<{ items: ModelRow[] }>("GET", "/models");
-  const model = catalogue.body.items.find(
+  return catalogue.body.items.filter(
     (item) => item.enabled && item.configured && kindOf(item) === "image" && item.ops?.includes("text_to_image"),
   );
-  assert(model, "no configured image model to queue a job with");
-  return model;
+}
+
+async function imageBackendUp(
+  model: ModelRow,
+  providers: Array<{ id: string; baseUrl: string }>,
+): Promise<boolean> {
+  const provider = providers.find((item) => item.id === model.providerId);
+  if (!provider) return false;
+  if ((model.apiMode ?? "") === "comfy-workflow" || /:8188\b/.test(provider.baseUrl)) {
+    for (const probe of [`${provider.baseUrl}/system_stats`, `${provider.baseUrl}/api/system_stats`]) {
+      try {
+        const reply = await fetch(probe, { signal: AbortSignal.timeout(2000) });
+        if (reply.ok) return true;
+      } catch {
+        // Try the next path; ComfyUI Desktop and the classic server disagree.
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+async function generationModel(): Promise<ModelRow> {
+  const candidates = await generationCandidates();
+  assert(candidates.length > 0, "no configured image model to queue a job with");
+  const providers = await call<Array<{ id: string; baseUrl: string }>>("GET", "/providers");
+  return (await Promise.all(candidates.map(async (model) => ({ model, up: await imageBackendUp(model, providers.body) })))).find(
+    (entry) => entry.up,
+  )?.model ?? candidates[0]!;
+}
+
+/**
+ * The row `generate_image` is bound to, resolved the way `resolveProfile` does:
+ * the default preset's binding when it is runnable, otherwise a keyed hosted
+ * backend ahead of local Comfy. Asking "is any backend up" was not the same
+ * question — a reachable hosted row let the check run against a preset pinned to
+ * a ComfyUI that was not started, and the agent's failure was reported as ours.
+ */
+async function agentImageModel(): Promise<ModelRow | undefined> {
+  const candidates = await generationCandidates();
+  const boot = await call<{
+    defaultProfileId?: string;
+    profiles?: Array<{ id: string; imageModelId?: string }>;
+  }>("GET", "/bootstrap");
+  const profiles = boot.body.profiles ?? [];
+  const profile = profiles.find((item) => item.id === boot.body.defaultProfileId) ?? profiles[0];
+  const pinned = candidates.find((model) => model.id === profile?.imageModelId);
+  if (pinned) return pinned;
+  return (
+    candidates.find((model) => (model.apiMode ?? "") !== "comfy-workflow") ??
+    candidates[0]
+  );
+}
+
+/** True when the backend the agent would actually draw with answers. */
+async function agentGenerationReachable(): Promise<boolean> {
+  try {
+    const model = await agentImageModel();
+    if (!model) return false;
+    const providers = await call<Array<{ id: string; baseUrl: string }>>("GET", "/providers");
+    return await imageBackendUp(model, providers.body);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when any configured image backend answers. The queue checks submit to a
+ * row they choose themselves, so they only need one that works — unlike the
+ * agent checks, which get whichever row the preset bound.
+ */
+async function generationReachable(): Promise<boolean> {
+  try {
+    const candidates = await generationCandidates();
+    const providers = await call<Array<{ id: string; baseUrl: string }>>("GET", "/providers");
+    for (const model of candidates) {
+      if (await imageBackendUp(model, providers.body)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bytes to edit, and the id they came from so a check can tell the edit's own
+ * output apart from its source. The generated picture when there is one, then
+ * the gallery, and only then a paid synchronous render — `POST /studio/run` is
+ * the same body as `POST /jobs` and waits, which is exactly what is wanted here.
+ */
+async function editSource(): Promise<{ imageId: string; bytes: Buffer } | undefined> {
+  const load = async (imageId: string) => {
+    const reply = await fetch(`${BASE}/images/${imageId}`, { headers: { authorization: `Bearer ${token}` } });
+    if (!reply.ok) return undefined;
+    const bytes = Buffer.from(await reply.arrayBuffer());
+    return bytes.byteLength > 1024 ? { imageId, bytes } : undefined;
+  };
+
+  if (carry.imageId) {
+    const carried = await load(carry.imageId);
+    if (carried) return carried;
+  }
+
+  const gallery = await call<{ items: Array<{ assetId: string; kind: string }> }>("GET", "/studio/gallery?limit=20");
+  for (const item of gallery.body.items ?? []) {
+    if (item.kind !== "image") continue;
+    const found = await load(item.assetId);
+    if (found) return found;
+  }
+
+  if (!(await generationReachable())) return undefined;
+  const model = await generationModel();
+  const rendered = await call<JobRow>("POST", "/studio/run", {
+    modelId: model.id,
+    op: "text_to_image",
+    params: { prompt: "一条安静的城市街道，白天，普通照片。" },
+  });
+  assert(rendered.status === 200, `studio run status ${rendered.status}: ${rendered.body?.error ?? ""}`);
+  assert(rendered.body.status === "succeeded", `studio run finished as ${rendered.body.status}`);
+  const asset = rendered.body.assets[0];
+  assert(asset, "studio run succeeded with no asset");
+  return await load(asset.assetId);
 }
 
 /**
@@ -262,7 +394,18 @@ async function watchJob(id: string): Promise<JobRow[]> {
   return frames;
 }
 
-const results: Array<{ name: string; ok: boolean; detail: string; ms: number }> = [];
+const results: Array<{ name: string; ok: boolean; skipped?: boolean; detail: string; ms: number }> = [];
+const stubs: OpenAiStub[] = [];
+process.on("exit", () => {
+  for (const stub of stubs) void stub.close();
+});
+
+class Skip extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "Skip";
+  }
+}
 
 async function check(name: string, fn: () => Promise<string>) {
   if (only && !name.includes(only)) return;
@@ -276,6 +419,11 @@ async function check(name: string, fn: () => Promise<string>) {
   } catch (error) {
     const ms = Date.now() - started;
     const detail = error instanceof Error ? error.message : String(error);
+    if (error instanceof Skip) {
+      results.push({ name, ok: true, skipped: true, detail, ms });
+      process.stdout.write(`\r\x1b[33mSKIP\x1b[0m ${name} — ${detail} (${(ms / 1000).toFixed(1)}s)\n`);
+      return;
+    }
     results.push({ name, ok: false, detail, ms });
     process.stdout.write(`\r\x1b[31mFAIL\x1b[0m ${name} — ${detail} (${(ms / 1000).toFixed(1)}s)\n`);
   }
@@ -300,7 +448,6 @@ assert(token, `login failed: ${JSON.stringify(login.body)}`);
 // Credentials normally live in the vault already; the environment is only an
 // override for a fresh machine. Whatever the source, report what the server
 // ended up with, since a missing key turns later checks into false failures.
-if (process.env.VENICE_API_KEY) await call("PUT", "/providers/venice/key", { value: process.env.VENICE_API_KEY });
 if (process.env.COMETAPI_KEY) await call("PUT", "/providers/cometapi/key", { value: process.env.COMETAPI_KEY });
 if (process.env.TAVILY_API_KEY) {
   await call("PUT", "/capabilities/secrets/tavily", { value: process.env.TAVILY_API_KEY });
@@ -311,15 +458,65 @@ if (process.env.EMBEDDING_API_KEY) {
 
 const configured = await call<{
   providers: { id: string; hasKey: boolean }[];
-  capabilities: { web: { hasTavilyKey: boolean }; embedding: { hasKey: boolean } };
+  capabilities: {
+    web: { hasTavilyKey: boolean; provider?: string; baseUrl?: string };
+    embedding: { hasKey: boolean };
+  };
 }>("GET", "/bootstrap");
 const providerKey = (id: string) => configured.body.providers?.find((p) => p.id === id)?.hasKey ?? false;
 const hasTavily = configured.body.capabilities.web.hasTavilyKey;
 const hasEmbedding = configured.body.capabilities.embedding.hasKey;
+const webProvider = configured.body.capabilities.web.provider ?? "tavily";
+const webBaseUrl = configured.body.capabilities.web.baseUrl ?? "";
+const canWebSearch =
+  webProvider === "searxng" ? Boolean(webBaseUrl.trim()) : hasTavily;
+const forceStub = process.env.LUMA_E2E_STUB === "1";
+const forceLive = process.env.LUMA_E2E_LIVE === "1";
+const useStub = forceStub || (!forceLive && !providerKey("cometapi"));
+
+if (useStub) {
+  const stub = await startOpenAiStub(0);
+  stubs.push(stub);
+  const provider = await call<{ id: string }>("POST", "/providers", {
+    id: "e2e-stub",
+    name: "E2E stub",
+    baseUrl: `${stub.url}/v1`,
+    auth: { style: "none" },
+    enabled: true,
+  });
+  if (provider.status === 409) {
+    await call("PATCH", "/providers/e2e-stub", {
+      baseUrl: `${stub.url}/v1`,
+      auth: { style: "none" },
+      enabled: true,
+    });
+  }
+  const model = await call("POST", "/models", {
+    id: "e2e-stub-chat",
+    providerId: "e2e-stub",
+    name: "E2E stub chat",
+    model: "stub-chat",
+    enabled: true,
+    apiMode: "openai-chat",
+    kind: "chat",
+    input: ["text"],
+  });
+  if (model.status === 409) {
+    await call("PATCH", "/models/e2e-stub-chat", { enabled: true, providerId: "e2e-stub" });
+  }
+  await call("PUT", "/models/default", { modelId: "e2e-stub-chat" });
+  const catalogue = await call<{ items: Array<{ id: string; kind?: string; enabled: boolean }> }>("GET", "/models");
+  for (const model of catalogue.body.items) {
+    if ((model.kind ?? "chat") === "chat" && model.id !== "e2e-stub-chat" && model.enabled) {
+      await call("PATCH", `/models/${model.id}`, { enabled: false });
+    }
+  }
+}
 
 console.log(
-  `auth ok — venice:${providerKey("venice") ? "yes" : "no"} cometapi:${providerKey("cometapi") ? "yes" : "no"} ` +
-    `tavily:${hasTavily ? "yes" : "no"} embedding:${hasEmbedding ? "yes" : "no"}\n`,
+  `auth ok — cometapi:${providerKey("cometapi") ? "yes" : "no"} ` +
+    `tavily:${hasTavily ? "yes" : "no"} embedding:${hasEmbedding ? "yes" : "no"} ` +
+    `chat:${useStub ? `stub :${stubs[0]?.port}` : "live"}\n`,
 );
 
 // ---------------------------------------------------------------- checks
@@ -361,10 +558,12 @@ await check("bootstrap exposes what a cold client needs", async () => {
 
 await check("secrets never leave the server", async () => {
   const reply = await call<Array<{ id: string; hasKey: boolean; apiKey?: string }>>("GET", "/providers");
-  const provider = reply.body.find((item) => item.id === "venice");
-  assert(provider, "venice provider missing");
-  assert(provider.hasKey === true, "hasKey flag not set after storing key");
-  assert(!("apiKey" in provider), "provider response carries an apiKey field");
+  assert(Array.isArray(reply.body) && reply.body.length, "no providers");
+  for (const provider of reply.body) {
+    assert(!("apiKey" in provider), `${provider.id} response carries an apiKey field`);
+  }
+  const comet = reply.body.find((item) => item.id === "cometapi");
+  assert(comet, "cometapi provider missing");
 
   const capabilities = await call("GET", "/capabilities");
   const capabilityJson = JSON.stringify(capabilities.body);
@@ -372,7 +571,7 @@ await check("secrets never leave the server", async () => {
   // Structural masking is what the API guarantees; when a key happens to be in
   // the environment we can also prove the literal value never comes back.
   for (const [label, secret] of [
-    ["venice", process.env.VENICE_API_KEY],
+    ["cometapi", process.env.COMETAPI_KEY ?? process.env.COMETAPI_API_KEY],
     ["tavily", process.env.TAVILY_API_KEY],
     ["embedding", process.env.EMBEDDING_API_KEY],
   ] as const) {
@@ -406,7 +605,11 @@ await check("memory tool writes through to /memory", async () => {
   try {
     const key = "user_preferences";
     await call("DELETE", `/memory/${key}`);
-    const run = await converse("请记住：我偏好简体中文回答，代码注释用英文。存进你的记忆里。");
+    // The tool is named in the request. What is under test is that a call writes
+    // through to `/memory`, and leaving it to the model to decide whether this
+    // deserves remembering made the check a coin flip on one sample: the same
+    // wording produced a call on one run and a bare "noted" on the next.
+    const run = await converse("请调用 set_memory 记住：我偏好简体中文回答，代码注释用英文。");
     assert(run.finished === "run.completed", run.finished);
     const used = run.tools.find((tool) => tool.name === "set_memory");
     assert(used, `set_memory not called (tools: ${run.tools.map((t) => t.name).join(",") || "none"})`);
@@ -419,12 +622,21 @@ await check("memory tool writes through to /memory", async () => {
   }
 });
 
-await check("memory is injected into the next conversation", async () => {
-  const run = await converse("我之前让你记住的偏好是什么？直接复述，不要调用工具。");
-  assert(run.finished === "run.completed", run.finished);
-  assert(/中文|简体/.test(run.text), `memory not recalled: ${run.text.slice(0, 120)}`);
-  return "recalled from system prompt";
-});
+/*
+ * Whether a remembered entry reaches the system prompt is checked in
+ * `audit-prompt.ts`, not here.
+ *
+ * It was here, as "ask the model what it was told to remember, and assert on the
+ * answer", and it could not do that job. This model invents plausible memories —
+ * runs of the same question produced entries naming a Hangzhou iOS developer and
+ * then a university student, neither of which is in any database — so the check
+ * passed whenever a confabulation happened to contain the expected word and
+ * failed on a correct recall that did not. A witness that makes things up cannot
+ * testify. The composed prompt is inspected directly instead, which is
+ * deterministic and is the part Luma is responsible for; what stays here is the
+ * HTTP half above, that a tool call writes through to `/memory`.
+ */
+
 
 await check("file upload indexes and is searchable", async () => {
   const body = [
@@ -463,11 +675,11 @@ await check("file upload indexes and is searchable", async () => {
     );
     file = reply.body;
     assert(!("diskPath" in file), "server disk path exposed to the client");
-    if (file.embeddingStatus === "ready" || file.embeddingStatus === "failed") break;
+    if (file.embeddingStatus === "ready" || file.embeddingStatus === "indexed" || file.embeddingStatus === "failed") break;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   assert(
-    file.embeddingStatus === "ready",
+    file.embeddingStatus === "ready" || file.embeddingStatus === "indexed",
     `embedding status ${file.embeddingStatus}${file.embeddingError ? `: ${file.embeddingError}` : ""}`,
   );
   assert((file.chunkCount ?? 0) > 0, "no chunks recorded");
@@ -505,8 +717,45 @@ await check("file_search tool answers from the uploaded document", async () => {
   return "cited the indexed chunk";
 });
 
+await check("an attached document stays with the turn that sent it", async () => {
+  // A picture becomes part of the message on its own; a document used to reach
+  // the model only through the system prompt's searchable-file list, so the
+  // settled turn carried no trace of the attachment. Both clients render the
+  // attachment from the stored content, and editing that turn re-sends whatever
+  // is in it, so the ref has to be there rather than implied.
+  const name = `attached-${Date.now()}.md`;
+  const uploaded = await upload(name, "text/markdown", Buffer.from("# 附件\n这是随消息发送的文档。", "utf8"));
+  assert(uploaded.status === 201 || uploaded.status === 200, `upload status ${uploaded.status}`);
+  const fileId = uploaded.body.id;
+
+  const run = await converse("这份附件的标题是什么？一句话回答。", { attachments: [fileId] });
+  assert(run.finished === "run.completed", run.finished);
+
+  const messages = await call<{ items: Array<{ role: string; content: unknown }> }>(
+    "GET",
+    `/conversations/${run.conversationId}/messages`,
+  );
+  const turn = messages.body.items.find((item) => item.role === "user");
+  assert(turn, "no user turn in the transcript");
+  const parts = Array.isArray(turn.content)
+    ? (turn.content as Array<Record<string, unknown>>)
+    : ((turn.content as { content?: unknown })?.content as Array<Record<string, unknown>>) ?? [];
+  const ref = parts.find((part) => part.type === "file_ref");
+  assert(ref, `the attachment left no ref: ${JSON.stringify(turn.content).slice(0, 200)}`);
+  assert(ref.file_id === fileId, `ref names ${String(ref.file_id)}, not the file that was sent`);
+  assert(ref.name === name, `ref lost the file name: ${String(ref.name)}`);
+  // The bytes never belong in a transcript; a ref is a pointer, and the content
+  // route is how a client fetches them.
+  assert(!JSON.stringify(turn.content).includes("这是随消息发送的文档"), "the document's text leaked into the transcript");
+
+  const bytes = await fetch(`${BASE}/files/${fileId}/content`, { headers: { authorization: `Bearer ${token}` } });
+  assert(bytes.status === 200, `content fetch status ${bytes.status}`);
+  await call("DELETE", `/files/${fileId}`);
+  return `${String(ref.name)} referenced by the turn, bytes served separately`;
+});
+
 await check("web_search returns live results with citations", async () => {
-  assert(hasTavily, "no tavily key configured on the server");
+  if (!canWebSearch) throw new Skip("no Tavily key or SearXNG URL configured");
 
   // Both capabilities this check depends on are set rather than assumed. Web is
   // the obvious one. Coding matters too, and less obviously: an earlier suite
@@ -534,11 +783,12 @@ await check("web_search returns live results with citations", async () => {
 });
 
 await check("image generation returns a servable image_ref", async () => {
+  if (!(await agentGenerationReachable())) throw new Skip("the agent's image backend is not running");
   const run = await converse("生成一张图：雨后的城市街道，霓虹倒影，夜晚，电影感。");
   assert(run.finished === "run.completed", run.finished);
   const used = run.tools.find((tool) => tool.name.startsWith("generate_image"));
   assert(used, `image tool not called (tools: ${run.tools.map((t) => t.name).join(",") || "none"})`);
-  assert(!used.isError, "image tool reported an error");
+  assert(!used.isError, `${used.name} reported an error`);
 
   // The picture has to be in the transcript, not in the model's prose. It is
   // asked to embed the reference and usually does, but a turn where it only
@@ -563,6 +813,7 @@ await check("image generation returns a servable image_ref", async () => {
 });
 
 await check("second turn sees the generated image", async () => {
+  if (!carry.imageId) throw new Skip("no generated image");
   const { conversationId } = carry;
   assert(conversationId, "no conversation from the image check");
   const run = await converse("刚才那张图里主要是什么颜色调？一句话描述，不要再生成新图。", { conversationId });
@@ -576,10 +827,12 @@ await check("second turn sees the generated image", async () => {
 });
 
 await check("uploaded image can be edited", async () => {
-  const { imageId } = carry;
-  assert(imageId, "no image id from the generation check");
-  const image = await fetch(`${BASE}/images/${imageId}`, { headers: { authorization: `Bearer ${token}` } });
-  const bytes = Buffer.from(await image.arrayBuffer());
+  // Editing does not need the agent's drawing backend, only pixels to edit, so
+  // this must not skip merely because the preset points at a ComfyUI nobody
+  // started. The gallery is tried before paying for a render.
+  const source = await editSource();
+  if (!source) throw new Skip("no image to edit and no reachable backend to make one");
+  const { imageId, bytes } = source;
   const uploaded = await upload("edit-source.png", "image/png", bytes);
   assert(uploaded.status === 201, `upload status ${uploaded.status}`);
 
@@ -824,9 +1077,16 @@ await check("a profile pins its chat model and gates its tools", async () => {
   // visible rather than a coincidence.
   const pinned = chat.find((model) => model.id !== catalogue.body.defaultModelId) ?? chat[0]!;
 
+  // The preset also overrides the global prompt, and not only to cover that
+  // field: the shipped persona is written for adult fiction, and a gateway in
+  // front of some models answers it with `finish_reason: content_filter` before
+  // any of this check's subject matter is reached. What is being tested is the
+  // binding and the gate, so the persona is replaced with something no upstream
+  // filter has an opinion about.
   const created = await call<{ id: string; chatModelId: string }>("POST", "/profiles", {
     name: `E2E 无工具 ${Date.now()}`,
     chatModelId: pinned.id,
+    globalPrompt: "You are a concise assistant. Answer in one short sentence.",
     capabilities: { memory: false, files: false, web: false, coding: false, skills: false, generation: false },
   });
   assert(created.status === 201, `profile create status ${created.status}`);
@@ -841,11 +1101,16 @@ await check("a profile pins its chat model and gates its tools", async () => {
     assert(conversation.body.modelId === pinned.id, `model ${conversation.body.modelId}, wanted ${pinned.id}`);
 
     // Generation is off in this profile, so the tool is not registered at all
-    // and asking for a picture cannot reach it.
+    // and asking for a picture cannot reach it. The gate holds whether or not
+    // the pinned model's provider chose to answer, so it is asserted first.
     const run = await converse("画一张猫的图。", { conversationId: conversation.body.id });
-    assert(run.finished === "run.completed", run.finished);
     const reached = run.tools.filter((tool) => /image|memory|web_search|file_search/.test(tool.name));
     assert(!reached.length, `gated tools still registered: ${reached.map((tool) => tool.name).join(",")}`);
+    if (run.finished !== "run.completed") {
+      // A model this suite pinned only to prove pinning is not one the user
+      // chose, so its provider refusing is an environment fact, not a defect.
+      throw new Skip(`the pinned model refused the request: ${run.finished}`);
+    }
 
     const cleared = await call<{ profileId: string }>("PATCH", `/conversations/${conversation.body.id}`, {
       profileId: "",
@@ -859,6 +1124,7 @@ await check("a profile pins its chat model and gates its tools", async () => {
 });
 
 await check("the job queue streams a generation to completion", async () => {
+  if (!(await generationReachable())) throw new Skip("no reachable image backend");
   const model = await generationModel();
   const submitted = await call<JobRow>("POST", "/jobs", {
     modelId: model.id,
@@ -895,6 +1161,7 @@ await check("the job queue streams a generation to completion", async () => {
 });
 
 await check("a job can be cancelled", async () => {
+  if (!(await generationReachable())) throw new Skip("no reachable image backend");
   const model = await generationModel();
   const submitted = await call<JobRow>("POST", "/jobs", {
     modelId: model.id,
@@ -1214,8 +1481,8 @@ await check("search finds a message across conversations", async () => {
 
 await check("failures answer in the documented envelope", async () => {
   // A client shows `message` verbatim and branches on `code`, so a route that
-  // answers with a bare string or an empty body breaks it (`03-api.md
-  // §Conventions`).
+  // answers with a bare string or an empty body breaks it (`05-api.md`
+  // 约定).
   const cases: Array<[string, string, number, unknown?]> = [
     ["GET", "/conversations/conv_missing", 404],
     ["POST", "/conversations/conv_missing/runs", 404, { text: "hi" }],
@@ -1257,11 +1524,148 @@ await check("conversation lifecycle: rename, list, delete", async () => {
   return "create → rename → list → delete";
 });
 
+await check("steering reaches a run that is already answering", async () => {
+  const created = await call<{ id: string }>("POST", "/conversations", {});
+  const run = await call<{ runId: string; seq: number }>("POST", `/conversations/${created.body.id}/runs`, {
+    text: "从 1 数到 30，每个数字一行，中间不要写别的。",
+  });
+  assert(run.status === 202, `run status ${run.status}`);
+  const tracePromise = stream(run.body.runId, run.body.seq);
+  // Late enough that the run is genuinely under way: steering a run that has not
+  // started yet would pass without the queue having carried anything.
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const phrase = "改成只说“好”，不要数字。";
+  const steered = await call("POST", `/conversations/${created.body.id}/steer`, { text: phrase });
+  const trace = await tracePromise;
+  if (steered.status === 409) throw new Skip("the run finished before the steer was sent");
+  assert(steered.status === 202 || steered.status === 204, `steer status ${steered.status}`);
+  assert(trace.finished === "run.completed", trace.finished);
+
+  // The instruction has to be in the tree, and it has to be answered: a steer
+  // that is queued but never drained would leave the transcript showing an
+  // answer that changed direction for no visible reason.
+  const messages = await call<{ items: Array<{ seq: number; role: string; content: unknown }> }>(
+    "GET",
+    `/conversations/${created.body.id}/messages`,
+  );
+  const items = messages.body.items;
+  const steer = items.find((item) => item.role === "user" && JSON.stringify(item.content).includes("只说"));
+  assert(steer, `the steer never reached the transcript: ${items.map((item) => item.role).join(",")}`);
+  assert(
+    items.some((item) => item.role === "assistant" && item.seq > steer.seq),
+    "the steer landed but the model was never asked again",
+  );
+  await call("DELETE", `/conversations/${created.body.id}`);
+  return `injected at seq ${steer.seq}, answered afterwards`;
+});
+
+await check("media is served in the shapes a client asks for", async () => {
+  const source = await editSource();
+  if (!source) throw new Skip("no image on this instance to serve");
+  const { imageId } = source;
+
+  // Thumbnails are what a gallery grid actually requests; a width that is not
+  // one of the offered tiers must not silently return the full-size bytes.
+  const widths = [320, 640, 1280];
+  const sizes: string[] = [];
+  for (const width of widths) {
+    const reply = await fetch(`${BASE}/images/${imageId}?w=${width}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert(reply.status === 200, `thumbnail w=${width} status ${reply.status}`);
+    const bytes = Buffer.from(await reply.arrayBuffer());
+    assert(bytes.byteLength > 500, `thumbnail w=${width} came back as ${bytes.byteLength} bytes`);
+    assert(String(reply.headers.get("content-type")).startsWith("image/"), `thumbnail w=${width} wrong type`);
+    sizes.push(`${width}:${Math.round(bytes.byteLength / 1024)}KB`);
+  }
+
+  const provenance = await call<{ model?: string | null; provider?: string | null }>(
+    "GET",
+    `/images/${imageId}/provenance`,
+  );
+  assert(provenance.status === 200, `provenance status ${provenance.status}`);
+  assert(typeof provenance.body === "object" && provenance.body !== null, "provenance returned no object");
+
+  // A phone scrubbing a video sends a range and expects 206 with the slice it
+  // asked for; answering 200 with the whole file is what makes seeking hang.
+  const gallery = await call<{ items: Array<{ assetId: string; kind: string }> }>("GET", "/studio/gallery?limit=50");
+  const video = (gallery.body.items ?? []).find((item) => item.kind === "video");
+  if (!video) return `thumbnails ${sizes.join(" ")}, provenance ok, no video to range`;
+  const ranged = await fetch(`${BASE}/videos/${video.assetId}`, {
+    headers: { authorization: `Bearer ${token}`, range: "bytes=0-1023" },
+  });
+  assert(ranged.status === 206, `range request status ${ranged.status}`);
+  const slice = Buffer.from(await ranged.arrayBuffer());
+  assert(slice.byteLength === 1024, `range returned ${slice.byteLength} bytes`);
+  assert(ranged.headers.get("content-range")?.startsWith("bytes 0-1023/"), "no content-range on a 206");
+  return `thumbnails ${sizes.join(" ")}, provenance ok, video range 206`;
+});
+
+await check("a video renders end to end", async () => {
+  // Off by default: a render is minutes of wall clock and a real charge, which
+  // is not something every run of this suite should incur. `LUMA_E2E_VIDEO=1`
+  // opts in, and the check is the only place the video path is proven live.
+  if (process.env.LUMA_E2E_VIDEO !== "1") throw new Skip("set LUMA_E2E_VIDEO=1 to pay for a render");
+  const catalogue = await call<{ items: ModelRow[] }>("GET", "/models");
+  const model = catalogue.body.items.find(
+    (item) => item.enabled && item.configured && kindOf(item) === "video" && item.ops?.includes("text_to_video"),
+  );
+  if (!model) throw new Skip("no configured video model");
+
+  const submitted = await call<JobRow>("POST", "/jobs", {
+    modelId: model.id,
+    op: "text_to_video",
+    params: { prompt: "一只猫在窗台上转头看向镜头，柔和的晨光。" },
+  });
+  assert(submitted.status === 202, `submit status ${submitted.status}`);
+  const frames = await watchJob(submitted.body.id);
+  assert(frames.length, "the stream carried no frame");
+  const settled = frames.at(-1)!;
+  assert(settled.status === "succeeded", `finished as ${settled.status}: ${settled.error ?? ""}`);
+  const asset = settled.assets[0];
+  assert(asset && asset.kind === "video", `asset kind ${asset?.kind}`);
+  const bytes = await fetch(`${BASE}/videos/${asset.assetId}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert(bytes.status === 200, `video fetch status ${bytes.status}`);
+  return `${asset.assetId.slice(0, 12)}… rendered by ${model.id}`;
+});
+
+await check("logging out invalidates the token it was called with", async () => {
+  // A second session, so the suite's own token survives to run the report.
+  const extra = await call<{ token: string }>("POST", "/auth/token", {
+    accessCode: CODE,
+    deviceName: "e2e-logout",
+  });
+  assert(extra.status === 200 && extra.body.token, `second login failed: ${extra.status}`);
+  const second = extra.body.token;
+
+  const before = await fetch(`${BASE}/conversations?limit=1`, { headers: { authorization: `Bearer ${second}` } });
+  assert(before.status === 200, `the new token could not read: ${before.status}`);
+
+  const out = await fetch(`${BASE}/auth/logout`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${second}` },
+  });
+  assert(out.status === 200 || out.status === 204, `logout status ${out.status}`);
+
+  const after = await fetch(`${BASE}/conversations?limit=1`, { headers: { authorization: `Bearer ${second}` } });
+  assert(after.status === 401, `a logged-out token still reads, status ${after.status}`);
+  const mine = await call("GET", "/conversations?limit=1");
+  assert(mine.status === 200, "logging one session out took the others with it");
+  return "session revoked, other sessions untouched";
+});
+
 // ---------------------------------------------------------------- report
 
 const failed = results.filter((result) => !result.ok);
+const skipped = results.filter((result) => result.skipped);
 const seconds = (results.reduce((total, result) => total + result.ms, 0) / 1000).toFixed(1);
-console.log(`\n${results.length - failed.length}/${results.length} passed in ${seconds}s`);
+console.log(
+  `\n${results.length - failed.length - skipped.length}/${results.length} passed` +
+    `${skipped.length ? `, ${skipped.length} skipped` : ""} in ${seconds}s`,
+);
+await Promise.all(stubs.map((stub) => stub.close()));
 if (failed.length) {
   for (const result of failed) console.log(`  ✗ ${result.name}: ${result.detail}`);
   process.exit(1);

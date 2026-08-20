@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { FileKind, FileSearchMode, Provenance } from "@shared/types.ts";
 import { MAX_UPLOAD_BYTES, paths } from "../../env.ts";
+import { opsOf } from "../../generation/index.ts";
 import { assetPath, forgetAssetIndex, writeImageSidecar } from "../../images.ts";
 import type { Services } from "../../services.ts";
 import { readJson } from "../body.ts";
@@ -328,7 +329,7 @@ export function fileRoutes(services: Services) {
             op: job.op,
             modelId: job.modelId,
             modelName: job.modelName,
-            repeatable: Boolean(model?.enabled && (model.ops ?? []).includes(job.op)),
+            repeatable: Boolean(model?.enabled && opsOf(model).includes(job.op)),
             params: job.params,
             sources: job.sources,
             elapsedMs: job.finishedAt && job.startedAt ? job.finishedAt - job.startedAt : null,

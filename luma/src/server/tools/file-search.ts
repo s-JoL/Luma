@@ -2,7 +2,12 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { FileSearchMode } from "@shared/types.ts";
 import type { Retrieval, SearchHit } from "../rag/retrieval.ts";
-import { FILE_SEARCH_DESCRIPTION, FILE_SEARCH_QUERY_DESCRIPTION, INTENT_DESCRIPTION } from "./descriptions.ts";
+import {
+  FILE_SEARCH_DESCRIPTION,
+  FILE_SEARCH_IDS_DESCRIPTION,
+  FILE_SEARCH_QUERY_DESCRIPTION,
+  INTENT_DESCRIPTION,
+} from "./descriptions.ts";
 
 /**
  * How relevant a hit is relative to the best one this query found.
@@ -30,13 +35,19 @@ export function fileSearchTool(retrieval: Retrieval, mode: FileSearchMode): Agen
       properties: {
         intent: { type: "string", description: INTENT_DESCRIPTION },
         query: { type: "string", description: FILE_SEARCH_QUERY_DESCRIPTION },
+        file_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: FILE_SEARCH_IDS_DESCRIPTION,
+        },
       },
       required: ["intent", "query"],
     }),
     execute: async (_callId, params) => {
-      const { query } = params as { query: string };
+      const { query, file_ids: fileIds } = params as { query: string; file_ids?: unknown };
+      const scope = Array.isArray(fileIds) ? fileIds.filter((id): id is string => typeof id === "string" && !!id) : [];
       const turn = turnCounter++;
-      const result = await retrieval.searchFiles(query, mode, 10);
+      const result = await retrieval.searchFiles(query, mode, 10, scope);
       const matches = result.results.filter((hit) => hit.excerpt.trim());
       const relevanceOf = relevanceAgainst(matches[0]?.retrievalScore ?? 0);
 
@@ -44,7 +55,9 @@ export function fileSearchTool(retrieval: Retrieval, mode: FileSearchMode): Agen
         const text =
           result.index.ready === 0
             ? "No files to search. Instruct the user to add files for the search."
-            : "No content found in the files. The files may not have been processed correctly or you may need to refine your query.";
+            : scope.length
+              ? "No matching content in the file(s) you named. Try different wording, or drop file_ids to search the whole library."
+              : "No content found in the files. The files may not have been processed correctly or you may need to refine your query.";
         return {
           content: [{ type: "text", text }],
           details: { structuredContent: { file_search: { turn, sources: [], fileCitations: true } } },

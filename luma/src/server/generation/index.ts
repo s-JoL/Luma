@@ -9,6 +9,7 @@
  */
 import fs from "node:fs";
 import type { GenerationOp, JsonSchema, ModelSpec, Provider } from "@shared/types.ts";
+import { stringifyToolEnums } from "../agent/tool-schema.ts";
 import { SECRET } from "../config.ts";
 import type { SecretVault } from "../crypto/secrets.ts";
 import { assetPath } from "../images.ts";
@@ -16,11 +17,10 @@ import type { Store } from "../store/store.ts";
 import { comfyAdapter } from "./comfy.ts";
 import { openAiImagesAdapter } from "./openai-images.ts";
 import { GenerationError, type GenerationAdapter, type SourceImage } from "./types.ts";
-import { veniceImageAdapter } from "./venice-image.ts";
 import { videoAdapter } from "./video.ts";
 
 const ADAPTERS = new Map<string, GenerationAdapter>(
-  [openAiImagesAdapter, veniceImageAdapter, comfyAdapter, videoAdapter].map((adapter) => [adapter.id, adapter]),
+  [openAiImagesAdapter, comfyAdapter, videoAdapter].map((adapter) => [adapter.id, adapter]),
 );
 
 export const generationAdapter = (spec: ModelSpec) => ADAPTERS.get(spec.apiMode);
@@ -28,6 +28,17 @@ export const generationAdapter = (spec: ModelSpec) => ADAPTERS.get(spec.apiMode)
 /** True when this row is something the generation layer can actually run. */
 export function isRunnable(spec: ModelSpec) {
   return (spec.kind === "image" || spec.kind === "video") && ADAPTERS.has(spec.apiMode);
+}
+
+/**
+ * Studio catalogue tie-breaker when the default preset has no binding for this
+ * kind: a keyed hosted backend, then local Comfy, then a hosted row that still
+ * needs a key. Profile bindings outrank this in `/studio/tools`.
+ */
+export function studioPriority(spec: ModelSpec): number {
+  if (spec.apiMode !== "comfy-workflow" && spec.configured !== false) return 0;
+  if (spec.apiMode === "comfy-workflow") return 1;
+  return 2;
 }
 
 const IMAGE_OPS: GenerationOp[] = ["text_to_image", "image_to_image"];
@@ -71,11 +82,11 @@ export function schemaOf(spec: ModelSpec, op: GenerationOp): JsonSchema {
 export function forModel(schema: JsonSchema): JsonSchema {
   const offered = Object.entries(schema.properties ?? {}).filter(([, field]) => field.audience !== "studio");
   const names = new Set(offered.map(([name]) => name));
-  return {
+  return stringifyToolEnums({
     ...schema,
     properties: Object.fromEntries(offered),
     required: (schema.required ?? []).filter((name) => names.has(name)),
-  };
+  });
 }
 
 /** The first op a model offers, used when a caller does not name one. */

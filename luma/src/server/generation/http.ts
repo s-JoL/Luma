@@ -23,6 +23,33 @@ const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 const transportFailure = (error: unknown) =>
   error instanceof TypeError || (error instanceof Error && error.name === "TypeError");
 
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+const onThisMachine = (host: string) => /^(127\.|localhost|\[::1\]|0\.0\.0\.0)/i.test(host);
+
+/**
+ * `fetch failed` is what a transport failure says, and it is what reached both
+ * the reader and the model as a job's error — a dead end for either. The host is
+ * the missing half, and for a backend on this machine the answer is usually that
+ * nothing is listening, which is something a person can act on.
+ */
+function unreachable(url: string, label: string, error: unknown) {
+  const host = hostOf(url);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+  return new GenerationError(
+    onThisMachine(host)
+      ? `本机的 ${host} 没有响应：${label} 需要的服务还没启动。先启动它，或在设置里改用云端后端。`
+      : `连不上 ${host}：${label} 没有得到响应，请检查网络或代理${cause ? `（${cause}）` : ""}。`,
+    "unreachable",
+  );
+}
+
 /** Exponential with jitter, so two adapters retrying do not march in step. */
 export const backoff = (attempt: number) =>
   Math.round(BASE_DELAY_MS * 2 ** (attempt - 1) * (0.8 + Math.random() * 0.4));
@@ -69,7 +96,8 @@ export async function request(url: string, options: RequestOptions): Promise<Res
     } catch (error) {
       if (cancel?.aborted) throw new GenerationError("Cancelled", "cancelled");
       // A timeout or a cancel is a decision, not a hiccup.
-      if (!transportFailure(error) || attempt === attempts) throw error;
+      if (!transportFailure(error)) throw error;
+      if (attempt === attempts) throw unreachable(url, label, error);
       last = error;
     }
     await delay(attempt, cancel ?? idle);

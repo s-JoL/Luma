@@ -46,9 +46,10 @@ export function conversationRoutes(services: Services) {
     // A deleted profile must not pin a conversation to nothing.
     const profile = asked ? store.getProfile(asked) : undefined;
     // The profile names a chat model, so the order is: what the client asked
-    // for, the profile's, then the global default (`08-generation.md §Profiles`).
+    // for, the profile's, then the global default (`03-generation.md §Profiles`).
     const wanted = body.modelId || profile?.chatModelId || "";
-    const modelId = wanted && store.getModel(wanted)?.enabled ? wanted : config.defaultModelId();
+    const spec = wanted ? store.getModel(wanted) : undefined;
+    const modelId = spec?.enabled && spec.configured ? wanted : config.defaultModelId();
     if (!modelId) return fail(context, 422, "no_model", "Configure a model before starting a conversation");
     return context.json(
       store.createConversation(modelId, body.title || "New conversation", profile?.id ?? ""),
@@ -85,7 +86,10 @@ export function conversationRoutes(services: Services) {
     if (!store.getConversation(id)) return fail(context, 404, "not_found", "Conversation not found");
     const body = await readJson<{ title: string; modelId: string; profileId: string }>(context);
     if (typeof body.title === "string" && body.title.trim()) store.setConversationTitle(id, body.title.trim());
-    if (body.modelId && store.getModel(body.modelId)?.enabled) store.setConversationModel(id, body.modelId);
+    if (body.modelId) {
+      const spec = store.getModel(body.modelId);
+      if (spec?.enabled && spec.configured) store.setConversationModel(id, body.modelId);
+    }
     // An empty string is how a client goes back to the plain global settings.
     if (typeof body.profileId === "string" && (!body.profileId || store.getProfile(body.profileId))) {
       store.setConversationProfile(id, body.profileId);
@@ -149,7 +153,8 @@ export function conversationRoutes(services: Services) {
       return fail(context, 409, "run_active", "This conversation already has an active run");
     }
 
-    const modelId = body.modelId && store.getModel(body.modelId)?.enabled ? body.modelId : conversation.modelId;
+    const asked = body.modelId ? store.getModel(body.modelId) : undefined;
+    const modelId = asked?.enabled && asked.configured ? asked.id : conversation.modelId;
     try {
       services.registry.resolve(modelId);
     } catch (error) {

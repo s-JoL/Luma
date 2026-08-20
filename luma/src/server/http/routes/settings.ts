@@ -11,15 +11,15 @@ import type {
 import { API_MODES } from "@shared/types.ts";
 import { SECRET } from "../../config.ts";
 import { adapterOps } from "../../generation/index.ts";
+import { slug } from "../../ids.ts";
 import { discoverModels } from "../../models/catalogue.ts";
+import { providerAuth } from "../../models/auth.ts";
 import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../../prompts/defaults.ts";
 import type { Services } from "../../services.ts";
 import { readJson } from "../body.ts";
 import { fail, failFromError } from "../errors.ts";
 
 const API_MODE_IDS = API_MODES.map((mode) => mode.id);
-const slug = (value: string) =>
-  value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `provider-${Date.now()}`;
 
 export function settingsRoutes(services: Services) {
   const app = new Hono();
@@ -32,7 +32,7 @@ export function settingsRoutes(services: Services) {
   app.post("/providers", async (context) => {
     const body = await readJson<ProviderInput>(context);
     if (!body.name || !body.baseUrl) return fail(context, 400, "invalid", "name and baseUrl are required");
-    const id = body.id ? slug(body.id) : slug(body.name);
+    const id = slug(body.id || body.name, "provider");
     if (store.getProvider(id)) return fail(context, 409, "conflict", `Provider ${id} already exists`);
     const provider = store.upsertProvider({ ...body, id, name: body.name, baseUrl: body.baseUrl });
     if (body.apiKey) vault.set(SECRET.provider(id), body.apiKey);
@@ -86,12 +86,14 @@ export function settingsRoutes(services: Services) {
     const provider = store.getProvider(context.req.param("id"));
     if (!provider) return fail(context, 404, "not_found", "Provider not found");
     const key = vault.get(SECRET.provider(provider.id));
-    if (!key) return fail(context, 422, "not_configured", `${provider.name} has no API key`);
+    if (!key && providerAuth(provider).style !== "none") {
+      return fail(context, 422, "not_configured", `${provider.name} has no API key`);
+    }
     const configured = new Set(
       store.listModels().filter((spec) => spec.providerId === provider.id).map((spec) => spec.model),
     );
     try {
-      const items = await discoverModels(provider, key, configured, context.req.raw.signal);
+      const items = await discoverModels(provider, key ?? "", configured, context.req.raw.signal);
       return context.json({ items });
     } catch (error) {
       return failFromError(context, error, "upstream_error");
@@ -108,7 +110,7 @@ export function settingsRoutes(services: Services) {
     const body = await readJson<ModelInput>(context);
     if (!body.providerId || !body.model) return fail(context, 400, "invalid", "providerId and model are required");
     if (!store.getProvider(body.providerId)) return fail(context, 400, "invalid", "Unknown provider");
-    const id = body.id ? slug(body.id) : slug(`${body.providerId}-${body.model}`);
+    const id = slug(body.id || `${body.providerId}-${body.model}`, "model");
     if (store.getModel(id)) return fail(context, 409, "conflict", `Model ${id} already exists`);
     const model = store.upsertModel(normalizeModel({ ...body, id } as ModelInput));
     services.reload();
@@ -129,7 +131,7 @@ export function settingsRoutes(services: Services) {
     let order = store.listModels().length;
     for (const entry of body.models ?? []) {
       if (!entry.model) continue;
-      const id = slug(entry.id || `${provider.id}-${entry.model}`);
+      const id = slug(entry.id || `${provider.id}-${entry.model}`, "model");
       if (store.getModel(id)) {
         skipped.push(id);
         continue;
@@ -172,14 +174,7 @@ export function settingsRoutes(services: Services) {
 
   app.patch("/capabilities", async (context) => {
     const body = await readJson<Capabilities>(context);
-    const before = config.capabilities().studio;
-    const saved = config.saveCapabilities(body);
-    // Studio-only servers are attached by the pool, so changing the selection
-    // has to re-run the connect pass.
-    const changed =
-      before.enabled !== saved.studio.enabled || before.servers.join() !== saved.studio.servers.join();
-    if (changed) await mcp.connect();
-    return context.json(saved);
+    return context.json(config.saveCapabilities(body));
   });
 
   app.put("/capabilities/secrets/:name", async (context) => {
@@ -225,7 +220,7 @@ export function settingsRoutes(services: Services) {
     if (!body.title || (!body.command && !body.url)) {
       return fail(context, 400, "invalid", "title and one of command or url are required");
     }
-    const id = body.id ? slug(body.id) : slug(body.title);
+    const id = slug(body.id || body.title, "mcp");
     if (store.listMcpServers().some((server) => server.id === id)) {
       return fail(context, 409, "conflict", `MCP server ${id} already exists`);
     }
@@ -287,7 +282,7 @@ export function settingsRoutes(services: Services) {
  * turning it into a chat model — a toggle of `enabled` was enough to strip a
  * working ComfyUI binding. Ops are filtered to what the mode's adapter can
  * actually do, so a row cannot advertise an operation nothing will run
- * (`08-generation.md §Models grow a kind`).
+ * (`03-generation.md §Models grow a kind`).
  */
 function normalizeModel(input: ModelInput): ModelInput {
   const apiMode = API_MODE_IDS.includes(input.apiMode as ApiMode) ? input.apiMode : "openai-chat";

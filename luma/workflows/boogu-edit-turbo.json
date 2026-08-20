@@ -12,6 +12,7 @@
       "scheduler": "11.inputs.scheduler",
       "denoise": "11.inputs.denoise"
     },
+    "promptHints": "An instruction-following edit graph: write what changes, not what the picture already is. It edits one image and has no reference slots, so anything the change depends on has to be described in words. The source is resized to the megapixel budget below, so a small crop of a large photo comes back softer than the original.",
     "controls": {
       "negative_prompt": {
         "type": "string",

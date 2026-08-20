@@ -7,3 +7,6 @@
 *.log
 *.pyc
 __pycache__/
+
+# Finder leaves these in every directory it has been asked to display.
+.DS_Store

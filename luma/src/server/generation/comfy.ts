@@ -16,10 +16,9 @@
  * what their author recommends is a property of the workflow, not of this file.
  * The row still wins the merge, since the row is what a user can edit.
  *
- * The submit/poll/fetch mechanics are carried over from the MCP sidecar this
- * replaces, including the parts that only exist because they were needed: a
- * client-generated prompt id so a retried submit cannot queue the work twice, and
- * a cancel on the way out so a timed-out prompt does not keep the GPU.
+ * Two details of the submit/poll/fetch mechanics exist only because they were
+ * needed: a client-generated prompt id so a retried submit cannot queue the work
+ * twice, and a cancel on the way out so a timed-out prompt does not keep the GPU.
  *
  * Progress comes from ComfyUI's WebSocket, which is the only place it exists —
  * `/queue` knows running from pending and nothing finer. That socket reports the
@@ -68,6 +67,12 @@ interface ComfyParams {
   editMegapixels?: number;
   /** The schema of each bound knob, keyed by the same name as its binding. */
   controls?: Record<string, JsonSchema>;
+  /**
+   * What this checkpoint responds to, shown on the prompt field. A graph can
+   * declare it beside its bindings, since the answer belongs to whichever model
+   * the graph loads rather than to Luma.
+   */
+  promptHints?: string;
 }
 
 /** Where a graph file declares what it binds; stripped before it is submitted. */
@@ -560,7 +565,7 @@ export const comfyAdapter: GenerationAdapter = {
     const config = configOf(spec);
     const bindings = config.bind ?? {};
     const properties: Record<string, JsonSchema> = {
-      prompt: promptField(op === "image_to_image" ? "改成什么样" : "画面描述", 32_000),
+      prompt: promptField(op === "image_to_image" ? "改成什么样" : "画面描述", 32_000, config.promptHints),
     };
     if (op === "image_to_image" || op === "image_to_video") {
       properties.source_image_id = {

@@ -4,12 +4,17 @@
 
 Two projects, nothing else: `luma/` (the chat, agent and image workstation) and
 `ComfyUI/` (the local generation backend Luma drives over `127.0.0.1:8188`).
-Luma's own conventions live in `luma/docs/`; read those before changing it.
+Luma's own conventions live in `luma/docs/`. Start at `luma/docs/00-product.md`
+before changing it.
 
-Luma bundles the only Node runtime on this machine at `luma/runtime/node`. It is
-not on the system PATH, so scripts must add it themselves rather than assume
-`node` resolves. Do not delete or relocate `luma/runtime/` — nothing in the
-workspace runs without it.
+Luma needs Node 24 or newer (`node:sqlite`). On the Windows development machine
+the only copy lives at `luma/runtime/node`, is not on the system PATH, and must
+not be deleted or relocated — nothing there runs without it. That build is a
+Windows one, so on macOS and Linux `scripts/common.sh` skips it and uses a Node
+24 from PATH instead; scripts must resolve Node rather than assume `node` does.
+
+`runtime/`, `run/` and `ComfyUI/` are installed per machine and gitignored.
+Their absence in a checkout is not a fault to repair.
 
 ## Environment
 

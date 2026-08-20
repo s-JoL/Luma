@@ -1,27 +1,34 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { ModelInput, ProviderInput } from "@shared/types.ts";
+import { API_MODES, type ModelInput, type ModelSpec, type ProviderInput } from "@shared/types.ts";
 import { SECRET } from "../config.ts";
 import type { Config } from "../config.ts";
 import type { SecretVault } from "../crypto/secrets.ts";
 import { paths } from "../env.ts";
-import { isRunnable, supportsOp } from "../generation/index.ts";
 import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../prompts/defaults.ts";
 import { json } from "./db.ts";
 import type { Store } from "./store.ts";
 
-const SEED_VERSION = "5";
+const SEED_VERSION = "12";
 
-/** Providers dropped from the defaults; removed on upgrade unless customised. */
-const RETIRED_PROVIDERS = ["kie"];
+/**
+ * Providers dropped from the defaults; removed on upgrade unless customised.
+ * `venice` went with its adapter: its image API was the one hosted backend that
+ * was not OpenAI-shaped, and carrying a second protocol for one provider cost
+ * more than pointing an OpenAI-shaped row at whichever gateway serves the model.
+ */
+const RETIRED_PROVIDERS = ["kie", "venice"];
 
 const PROVIDERS: Array<ProviderInput & { id: string }> = [
-  { id: "venice", name: "Venice", baseUrl: "https://api.venice.ai/api/v1" },
   { id: "cometapi", name: "CometAPI", baseUrl: "https://api.cometapi.com/v1" },
-  // Local ComfyUI is a provider like any other; it just needs no key.
   { id: "comfy", name: "ComfyUI 本地", baseUrl: "http://127.0.0.1:8188" },
 ];
+
+const CHAT_ID = "cometapi:grok-4.6";
+const IMAGE_ID = "comfy:lustify-v10";
+const EDIT_ID = "cometapi:seedream-5-pro";
+const VIDEO_ID = "cometapi:seedance-2-5";
 
 /** Nothing that draws holds a conversation, so the chat-side fields are inert. */
 const GENERATION_DEFAULTS = {
@@ -36,117 +43,23 @@ const GENERATION_DEFAULTS = {
 
 const MODELS: ModelInput[] = [
   {
-    id: "grok-4.6",
-    name: "Grok 4.6 · Venice",
-    providerId: "venice",
-    model: "grok-4-6",
-    enabled: true,
-    reasoning: true,
-    input: ["text", "image"],
-    contextWindow: 500000,
-    maxTokens: 65536,
-    thinkingLevel: "high",
-    apiMode: "openai-chat",
-    librechatCompat: true,
-    pricing: { input: 2.27, output: 6.8, cacheRead: 0.57 },
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      supportsUsageInStreaming: false,
-      supportsStore: false,
-      supportsStrictMode: true,
-      sendSessionAffinityHeaders: false,
-    },
-  },
-  {
-    id: "claude-opus-4.6",
-    name: "Claude Opus 4.6 · Venice",
-    providerId: "venice",
-    model: "claude-opus-4-6",
-    enabled: true,
-    reasoning: true,
-    input: ["text", "image"],
-    contextWindow: 1000000,
-    maxTokens: 65536,
-    thinkingLevel: "high",
-    apiMode: "openai-chat",
-    pricing: { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 },
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      supportsUsageInStreaming: true,
-      supportsStrictMode: true,
-      sendSessionAffinityHeaders: true,
-    },
-  },
-  {
-    id: "gemini-3.7-flash",
-    name: "Gemini 3.7 Flash · Venice",
-    providerId: "venice",
-    model: "gemini-3-7-flash",
-    enabled: true,
-    reasoning: true,
-    input: ["text", "image"],
-    contextWindow: 1000000,
-    maxTokens: 65536,
-    thinkingLevel: "high",
-    apiMode: "openai-chat",
-    pricing: { input: 1.875, output: 9.375, cacheRead: 0.1875 },
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      supportsUsageInStreaming: true,
-      supportsStrictMode: true,
-      sendSessionAffinityHeaders: true,
-    },
-  },
-  {
-    id: "cometapi:claude-opus-4.6",
-    name: "Claude Opus 4.6 · CometAPI",
+    id: CHAT_ID,
+    name: "Grok 4.6",
     providerId: "cometapi",
-    model: "claude-opus-4-6",
+    model: "grok-4.6",
     enabled: true,
+    pinned: true,
     reasoning: true,
     input: ["text", "image"],
-    contextWindow: 1000000,
-    maxTokens: 65536,
+    contextWindow: 500_000,
+    maxTokens: 65_536,
     thinkingLevel: "high",
-    apiMode: "anthropic-messages",
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      supportsUsageInStreaming: true,
-      supportsStrictMode: true,
-      sendSessionAffinityHeaders: false,
-    },
+    apiMode: "openai-chat",
   },
-  // Both providers serve several of the same models, so every name carries its
-  // provider: two entries called "Grok 4.6" in the switcher would be a coin flip.
-  ...([
-    { suffix: "grok-4.6", name: "Grok 4.6", model: "grok-4.6", reasoning: true },
-    { suffix: "gemini-3.7-flash", name: "Gemini 3.7 Flash", model: "gemini-3.7-flash", reasoning: true },
-    { suffix: "glm-5.3", name: "GLM 5.3", model: "glm-5.3", reasoning: true, input: ["text"] },
-    { suffix: "kimi-k3", name: "Kimi K3", model: "kimi-k3", reasoning: true, input: ["text"] },
-  ] as Array<{ suffix: string; name: string; model: string; reasoning: boolean; input?: Array<"text" | "image"> }>)
-    .map((entry) => ({
-      id: `cometapi:${entry.suffix}`,
-      name: `${entry.name} · CometAPI`,
-      providerId: "cometapi",
-      model: entry.model,
-      enabled: true,
-      reasoning: entry.reasoning,
-      input: entry.input ?? (["text", "image"] as Array<"text" | "image">),
-      contextWindow: 256000,
-      maxTokens: 32768,
-      thinkingLevel: "high" as const,
-      apiMode: "openai-chat" as const,
-    })),
-  // Generation models. `kind` is what keeps them out of the chat switcher and the
-  // model graph, and what puts them in the studio and the agent's image tools.
   {
     ...GENERATION_DEFAULTS,
-    id: "comfy:lustify-v10",
-    name: "Lustify v10 · 本地",
+    id: IMAGE_ID,
+    name: "Lustify v10",
     providerId: "comfy",
     model: "lustify-v10-krea-turbo",
     kind: "image",
@@ -164,59 +77,13 @@ const MODELS: ModelInput[] = [
   },
   {
     ...GENERATION_DEFAULTS,
-    id: "comfy:boogu-edit",
-    name: "Boogu Edit · 本地",
-    providerId: "comfy",
-    model: "boogu-edit-turbo",
-    kind: "image",
-    ops: ["image_to_image"],
-    apiMode: "comfy-workflow",
-    // Off by default: a local edit competes for the same VRAM as generation, and
-    // the hosted editor below is the better first choice.
-    enabled: false,
-    params: {
-      workflow: "boogu-edit-turbo.json",
-      bind: {
-        prompt: "8.inputs.prompt",
-        source: "1.inputs.image",
-        megapixels: "2.inputs.megapixels",
-        seed: "12.inputs.noise_seed",
-      },
-      editMegapixels: 1,
-    },
-  },
-  {
-    ...GENERATION_DEFAULTS,
-    id: "venice:seedream-v5-pro",
-    name: "Seedream V5 Pro · Venice",
-    providerId: "venice",
-    model: "seedream-v5-pro",
-    kind: "image",
-    ops: ["text_to_image", "image_to_image"],
-    apiMode: "venice-image",
-    params: { editModel: "seedream-v5-pro-edit", promptLimit: 10000 },
-  },
-  {
-    ...GENERATION_DEFAULTS,
-    id: "cometapi:seedream-5-pro",
-    name: "Seedream 5 Pro · CometAPI",
+    id: EDIT_ID,
+    name: "Seedream 5 Pro",
     providerId: "cometapi",
     model: "seedream-5-0-pro-260628",
     kind: "image",
     ops: ["text_to_image", "image_to_image"],
     apiMode: "openai-images",
-    /**
-     * Every value here was answered by the live API rather than read off a
-     * documentation table, because the two disagree. `/images/edits` works but
-     * takes one image; only the generations route with an `image` array composes
-     * the ten references this model advertises, so that is the shape a row that
-     * wants multi-reference editing has to ask for.
-     *
-     * The sizes are exact because a tier is a pixel budget, not a frame: `2K`
-     * returned 2496x1664 for one call and 1776x2368 for the next from the same
-     * prompt. On an edit the reference decides the aspect, which is what makes
-     * `auto` the right default there and an explicit pair the right one here.
-     */
     params: {
       editMode: "unified",
       sourceField: "image",
@@ -234,31 +101,25 @@ const MODELS: ModelInput[] = [
         "2K",
         "1K",
       ],
-      // The output arrived watermarked until this was sent explicitly, whatever
-      // the route's documented default claims.
       extra: { output_format: "png", watermark: false },
+      promptHints:
+        "Takes one dense natural-language paragraph, not tags: it reads clauses and ownership (\"her left hand on his shoulder\") and loses meaning in comma-separated keyword lists. No weighting syntax, no quality slogans. It renders legible text when the exact words are quoted in the prompt. On an edit it keeps the source and applies the change asked for, and it accepts several reference images — say what each one contributes.",
     },
   },
   {
     ...GENERATION_DEFAULTS,
-    id: "cometapi:seedance-2-5",
-    name: "Seedance 2.5 · CometAPI",
+    id: VIDEO_ID,
+    name: "Seedance 2.5",
     providerId: "cometapi",
-    // `/v1/models` lists `seedance-2-5`. The documentation's
-    // `seedance-2-5-260628` answers 503 model_not_found, so the live catalogue
-    // wins over the table.
     model: "seedance-2-5",
     kind: "video",
     ops: ["text_to_video", "image_to_video"],
     apiMode: "openai-videos",
     params: {
-      // Documented as multipart-only, and it carries reference frames as files
-      // rather than as data URIs.
       submitFormat: "multipart",
       sourceField: "input_reference",
       maxSources: 1,
       durations: [4, 5, 6, 8, 10, 12, 15, 20, 25, 30],
-      // 2.5 serves 480p and 720p only; the exact pairs are the documented ones.
       sizes: [
         "1280x720",
         "720x1280",
@@ -269,6 +130,8 @@ const MODELS: ModelInput[] = [
         "854x480",
         "480x854",
       ],
+      promptHints:
+        "Describes motion, not a still: what moves, in which direction, how fast, and what the camera does (hold, pan, push in, orbit, handheld). One continuous shot — asking for a cut, a montage or a second scene gets a confused single take. Given a first frame, describe only the movement away from it; the frame already carries the subject and the light.",
     },
   },
 ];
@@ -276,8 +139,8 @@ const MODELS: ModelInput[] = [
 /**
  * MCP servers that shipped as defaults and no longer do. The five image sidecars
  * are gone because the generation layer runs the same ComfyUI graphs and the same
- * Venice calls in process (`08-generation.md`); leaving them installed gave the
- * model two ways to draw and a coin flip between them.
+ * hosted image calls in process (`03-generation.md`); leaving them installed gave
+ * the model two ways to draw and a coin flip between them.
  */
 const RETIRED_MCP = [
   "local-image-generation",
@@ -312,6 +175,15 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
   for (const id of RETIRED_PROVIDERS) {
     if (store.getProvider(id)) store.deleteProvider(id);
   }
+  // A row naming a protocol nothing implements any more is not a model the user
+  // configured, it is a row whose adapter was removed under it. Its provider's
+  // cascade covers the common case; this covers the row someone had pointed at
+  // another gateway, which would otherwise sit in the list unable to run.
+  const known = new Set(API_MODES.map((mode) => mode.id as string));
+  for (const spec of store.listModels()) {
+    if (!known.has(spec.apiMode)) store.deleteModel(spec.id);
+  }
+  retargetGemini(store);
   for (const id of RETIRED_MCP) store.deleteMcpServer(id);
   const adopted: string[] = [];
   for (const [index, provider] of PROVIDERS.entries()) {
@@ -334,9 +206,23 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
       store.upsertModel({ ...existing, params: model.params });
       adopted.push(model.id);
     }
+    // The first Comet chat rows all shipped with a generic 256k/32k pair because
+    // `/v1/models` does not return a window. Replace that package with the
+    // per-family numbers above, but not a window someone typed themselves.
+    const current = store.getModel(model.id)!;
+    if (
+      current.contextWindow === 256_000 &&
+      current.maxTokens === 32_768 &&
+      (model.contextWindow !== 256_000 || model.maxTokens !== 32_768)
+    ) {
+      store.upsertModel({ ...current, contextWindow: model.contextWindow, maxTokens: model.maxTokens });
+      adopted.push(`${model.id}:window`);
+    }
+    const polished = polishShippedRow(store.getModel(model.id)!, model);
+    if (polished) store.upsertModel(polished);
   }
   if (adopted.length) console.log(`[seed] adopted shipped parameters for ${adopted.join(", ")}`);
-  seedDefaultProfile(store, config);
+  applyShippedProfile(store, config);
   const prompts = config.prompts();
   config.savePrompts({
     globalPrompt: prompts.globalPrompt || DEFAULT_GLOBAL_PROMPT,
@@ -355,48 +241,116 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
   return true;
 }
 
-/**
- * One profile, naming which model is behind each of the agent's three generation
- * tools.
- *
- * Without it the tools are bound by falling back to the first enabled row, which
- * is `ORDER BY sort_order, name` — and two shipped rows share a sort order, so
- * which model the agent drew with came down to which name sorted first. That is
- * not a decision anyone made, and nothing in the interface showed what it had
- * landed on.
- *
- * So this pins what the fallback already resolves to rather than choosing
- * something new: behaviour is unchanged on the day it appears, and from then on
- * the binding is a row in Settings the user can read and change. Every capability
- * is on, because a profile that gated one would be a second, invisible place for
- * a feature to be switched off.
- */
-function seedDefaultProfile(store: Store, config: Config) {
-  if (store.listProfiles().length) return;
-  const enabled = store.listModels().filter((spec) => spec.enabled);
-  const chat = enabled.find((spec) => spec.kind === "chat");
-  const image = enabled.find((spec) => spec.kind === "image" && isRunnable(spec));
-  const video = enabled.find((spec) => spec.kind === "video" && isRunnable(spec));
-  const edit =
-    image && supportsOp(image, "image_to_image")
-      ? image
-      : enabled.find((spec) => spec.kind === "image" && isRunnable(spec) && supportsOp(spec, "image_to_image"));
-  if (!chat && !image) return;
+/** Earlier shipped chat defaults; still pointing at one of these means nobody picked a favourite. */
+const PREVIOUS_CHAT_DEFAULTS = new Set([
+  "grok-4.6",
+  "claude-opus-4.6",
+  "gemini-3.7-flash",
+  "cometapi:claude-opus-4.6",
+  "cometapi:gemini-3.7-flash",
+  "cometapi:glm-5.3",
+  "cometapi:kimi-k3",
+]);
 
-  store.upsertProfile({
-    id: "default",
-    name: "通用",
-    chatModelId: chat?.id ?? "",
-    imageModelId: image?.id ?? "",
-    // Written out even when it equals the image model, so the settings row says
-    // which model edits rather than leaving it to be inferred.
-    editModelId: edit?.id ?? "",
-    videoModelId: video?.id ?? "",
-    capabilities: { memory: true, files: true, web: true, coding: true, skills: true, generation: true },
-    mcpServers: [],
-    sortOrder: 0,
-  });
-  config.setDefaultProfileId("default");
+const STALE_SHIPPED_NAMES = new Set([
+  "Grok 4.6 · CometAPI",
+  "Lustify v10 · 本地",
+  "Seedream 5 Pro · CometAPI",
+  "Seedance 2.5 · CometAPI",
+]);
+
+/**
+ * Moves Gemini rows onto Gemini's own protocol.
+ *
+ * Nobody chose the OpenAI-compatible one for them; it was simply the default
+ * every bulk-added row got. The cost of leaving them there is not cosmetic: a
+ * safety threshold can only be set on `generateContent`, so on the compatible
+ * endpoint an ordinary request comes back as `finish_reason: content_filter`
+ * and there is no field that can say otherwise. The rows are otherwise
+ * untouched, and a row already on some other protocol deliberately — anything
+ * that is not the default — is left where it is.
+ */
+function retargetGemini(store: Store) {
+  const moved: string[] = [];
+  for (const spec of store.listModels()) {
+    if (spec.kind !== "chat" && spec.kind !== undefined) continue;
+    if (spec.apiMode !== "openai-chat" || !/gemini/i.test(spec.model)) continue;
+    store.upsertModel({ ...spec, apiMode: "google-generative" });
+    moved.push(spec.id);
+  }
+  if (moved.length) console.log(`[seed] moved to Gemini's own protocol: ${moved.join(", ")}`);
+}
+
+function polishShippedRow(existing: ModelSpec, model: ModelInput) {
+  const next = { ...existing };
+  let changed = false;
+  // Prompting advice about a backend is knowledge, not configuration: a row that
+  // has none is a row that predates it, and filling in the absent key is how the
+  // advice reaches an install whose parameters were otherwise already set. A key
+  // that is present, empty included, is the user's answer and is left alone.
+  const shippedHints = (model.params as { promptHints?: unknown } | undefined)?.promptHints;
+  if (typeof shippedHints === "string" && !("promptHints" in (existing.params ?? {}))) {
+    next.params = { ...(existing.params ?? {}), promptHints: shippedHints };
+    changed = true;
+  }
+  if (model.enabled && !existing.enabled) {
+    next.enabled = true;
+    changed = true;
+  }
+  if (model.pinned && !existing.pinned) {
+    next.pinned = true;
+    changed = true;
+  }
+  if (STALE_SHIPPED_NAMES.has(existing.name) && model.name !== existing.name) {
+    next.name = model.name;
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
+/**
+ * The shipped "通用" preset: chat, generate, edit, video. Existing installs keep
+ * extra models they already added; only this named preset is retargeted, and only
+ * while it is still called 通用.
+ */
+function applyShippedProfile(store: Store, config: Config) {
+  const chat = store.getModel(CHAT_ID);
+  const image = store.getModel(IMAGE_ID);
+  const edit = store.getModel(EDIT_ID);
+  const video = store.getModel(VIDEO_ID);
+
+  if (!store.listProfiles().length) {
+    if (!chat && !image) return;
+    store.upsertProfile({
+      id: "default",
+      name: "通用",
+      chatModelId: chat?.id ?? "",
+      imageModelId: image?.id ?? "",
+      editModelId: edit?.id ?? "",
+      videoModelId: video?.id ?? "",
+      capabilities: { memory: true, files: true, web: true, coding: true, skills: true, generation: true },
+      mcpServers: [],
+      sortOrder: 0,
+    });
+    config.setDefaultProfileId("default");
+  } else {
+    const id = config.defaultProfileId() || store.listProfiles()[0]?.id;
+    const profile = id ? store.getProfile(id) : undefined;
+    if (profile?.name === "通用") {
+      store.upsertProfile({
+        ...profile,
+        chatModelId: chat?.id ?? profile.chatModelId,
+        imageModelId: image?.id ?? profile.imageModelId,
+        editModelId: edit?.id ?? profile.editModelId,
+        videoModelId: video?.id ?? profile.videoModelId,
+      });
+    }
+  }
+
+  const current = store.getSetting<string>("defaultModelId", "");
+  if (chat?.enabled && (!current || PREVIOUS_CHAT_DEFAULTS.has(current))) {
+    config.setDefaultModelId(CHAT_ID);
+  }
 }
 
 /** Hash of each shipped graph as this code last wrote it, by file name. */

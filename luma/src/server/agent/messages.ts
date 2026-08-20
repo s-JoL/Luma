@@ -65,16 +65,38 @@ export function videoRef(meta: unknown): VideoRef | undefined {
 }
 
 /**
- * Appends a reference to a persisted message's content. An image arrives as a
- * base64 part that `persistMessage` swaps for its ref, but a video is never sent
- * to the model in the first place, so its ref has nothing to replace.
+ * A document attached to a turn: anything that is neither picture nor clip.
+ *
+ * It carries its name and size because there is nothing to recognise it by
+ * otherwise — a client has no thumbnail for a PDF, and the model is being told
+ * a file exists rather than shown its contents. The bytes themselves are never
+ * here; they reach the model through `file_search`, which is why the ref names
+ * the id a search can be pointed at.
  */
-export function withAppendedRef(persisted: unknown, ref: VideoRef | ImageRef) {
+export interface FileRef {
+  type: "file_ref";
+  file_id: string;
+  name: string;
+  mime_type: string;
+  bytes?: number | null;
+}
+
+/**
+ * Appends references to a persisted message's content. An image arrives as a
+ * base64 part that `persistMessage` swaps for its ref, but a video and a
+ * document are never sent to the model in the first place, so their refs have
+ * nothing to replace and have to be added.
+ */
+export function withAppendedRef(persisted: unknown, ref: VideoRef | ImageRef | FileRef) {
+  return withAppendedRefs(persisted, [ref]);
+}
+
+export function withAppendedRefs(persisted: unknown, refs: Array<VideoRef | ImageRef | FileRef>) {
   const record = persisted as { content?: unknown } | null;
-  if (!record || typeof record !== "object") return persisted;
+  if (!record || typeof record !== "object" || !refs.length) return persisted;
   const content = Array.isArray(record.content)
-    ? [...record.content, ref]
-    : [{ type: "text", text: String(record.content ?? "") }, ref];
+    ? [...record.content, ...refs]
+    : [{ type: "text", text: String(record.content ?? "") }, ...refs];
   return { ...record, content };
 }
 
@@ -329,6 +351,19 @@ export function describeRefs(messages: AgentMessage[]): AgentMessage[] {
           return {
             type: "text",
             text: `[video video_id=${ref.video_id}${dimensions(ref.width, ref.height)}${seconds} ${ref.mime_type}]`,
+          };
+        }
+        // The document's text is not here. On the turn it arrived, the text is
+        // in the prompt; from the next turn on this line is what is left, and it
+        // names the id `file_search` can be scoped to. It deliberately does not
+        // tell the model to go and search: the earlier wording did, and the
+        // model obeyed it on the very turn the document was already in front of
+        // it, searching the whole library and reading back other files.
+        if (record.type === "file_ref") {
+          const ref = record as unknown as FileRef;
+          return {
+            type: "text",
+            text: `[file file_id=${ref.file_id} ${JSON.stringify(ref.name)} ${ref.mime_type} — attached by the user to this message]`,
           };
         }
         return part;

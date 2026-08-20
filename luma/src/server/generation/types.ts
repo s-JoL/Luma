@@ -1,6 +1,6 @@
 /**
  * One interface for everything that produces pixels or frames
- * (`08-generation.md`). An adapter answers what a model can do, what parameters
+ * (`03-generation.md`). An adapter answers what a model can do, what parameters
  * it takes, and then does the work.
  */
 import type { GenerationOp, JsonSchema, ModelSpec, Provider } from "@shared/types.ts";
@@ -84,10 +84,19 @@ export class GenerationError extends Error {
   }
 }
 
-/** Shared by every adapter: a prompt is the one thing they all require. */
-export const promptField = (title: string, max = 10_000): JsonSchema => ({
+/**
+ * Shared by every adapter: a prompt is the one thing they all require.
+ *
+ * `hints` is where a backend's own prompting advice goes. It has to be here
+ * rather than in the global prompt, because it is true of one model and wrong
+ * for the next: the film stocks and camera bodies that move an SDXL checkpoint
+ * mean nothing to a hosted editor, and a global prompt naming them teaches every
+ * model to write for the one that has them. A model row carries its own.
+ */
+export const promptField = (title: string, max = 10_000, hints?: string): JsonSchema => ({
   type: "string",
   title,
   minLength: 1,
   maxLength: max,
+  ...(hints?.trim() ? { description: hints.trim() } : {}),
 });

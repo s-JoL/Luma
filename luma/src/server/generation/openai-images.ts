@@ -49,12 +49,13 @@ interface ImageParams {
   /** References this model accepts. Above one, the schema offers the extra slots. */
   maxSources?: number;
   promptLimit?: number;
+  /** This backend's own prompting advice, shown on the prompt field. */
+  promptHints?: string;
 }
 
 /**
- * "Keep the frame you were given", spelled the way the Venice adapter already
- * spells it so one idea covers both backends. Offered on edits only: a tier like
- * `2K` is a pixel budget and the reference decides the aspect, but an explicit
+ * "Keep the frame you were given". Offered on edits only: a tier like `2K` is a
+ * pixel budget and the reference decides the aspect, but an explicit
  * `2048x2048` would return a square crop of a widescreen picture. Generation has
  * no frame to inherit, and letting the backend pick made the same prompt come
  * back 3:2 once and 3:4 the next time.
@@ -106,7 +107,11 @@ export const openAiImagesAdapter: GenerationAdapter = {
 
   schema(spec, op) {
     const properties: Record<string, JsonSchema> = {
-      prompt: promptField(op === "image_to_image" ? "改成什么样" : "画面描述", params(spec).promptLimit ?? 10_000),
+      prompt: promptField(
+        op === "image_to_image" ? "改成什么样" : "画面描述",
+        params(spec).promptLimit ?? 10_000,
+        params(spec).promptHints,
+      ),
       size: {
         type: "string",
         title: "尺寸",

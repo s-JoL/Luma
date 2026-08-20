@@ -1,7 +1,9 @@
 /**
  * Tool descriptions and argument help text. These strings are part of the
- * model-facing contract: they are reproduced verbatim from the LibreChat
- * behaviour Luma replaces, and the alignment tests pin them.
+ * model-facing contract, and most began as the LibreChat wording Luma replaces —
+ * kept because the citation anchors downstream of them are parsed by shape. Kept
+ * is not sacred: where the inherited wording produced the wrong behaviour it has
+ * been rewritten, and the reason is recorded next to it.
  */
 
 export const INTENT_DESCRIPTION =
@@ -61,7 +63,18 @@ Use anchor marker(s) immediately after the statement:
 
 **NEVER use markdown links, [1], or footnotes. CITE ONLY with anchors provided.**`;
 
-export const FILE_SEARCH_DESCRIPTION = `Performs semantic search across attached "file_search" documents using natural language queries. This tool analyzes the content of uploaded files to find relevant information, quotes, and passages that best match your query. Use this to extract specific information or find relevant sections within the available documents.
+/**
+ * The wording used to open with "semantic search across attached documents",
+ * which is where a real misbehaviour came from: a document sent with the current
+ * message has its text in the prompt already, and a tool that advertises itself
+ * as the way to read attachments got called anyway — library-wide — after which
+ * the model answered about whichever other file ranked first. The tool is for
+ * finding things in the library. Reading what the reader just handed over is not
+ * a search problem.
+ */
+export const FILE_SEARCH_DESCRIPTION = `Searches the reader's document library by meaning, and returns the passages that best match your query. Use it to find where something is said across files you have not been shown, or to reach the rest of a document whose text arrived truncated.
+
+Do NOT use it to read a document attached to the current message: that text is already in your context, under "Documents attached to this message". Searching for it returns passages from unrelated files and is how a summary of the wrong document happens.
 
 **CITE FILE SEARCH RESULTS:**
 Use the EXACT anchor markers shown below (copy them verbatim) immediately after statements derived from file content. Reference the filename in your text:
@@ -74,6 +87,17 @@ Use the EXACT anchor markers shown below (copy them verbatim) immediately after 
 
 export const FILE_SEARCH_QUERY_DESCRIPTION =
   "A natural language query to search for relevant information in the files. Be specific and use keywords related to the information you're looking for. The query will be used for semantic similarity matching against the file contents.";
+
+/**
+ * Scoping is offered because the unscoped tool answered the wrong question. A
+ * search of the whole library is right for "which of my documents mentions
+ * this" and wrong for "what does that file say", and given only the second the
+ * model would read back passages from unrelated files.
+ */
+export const FILE_SEARCH_IDS_DESCRIPTION = `Optional. Restrict the search to these exact file ids, in the form \`file_<32 lowercase hexadecimal characters>\`.
+Pass them when the question is about a particular document — one attached to a message, or one the reader named — so passages from unrelated files cannot come back as the answer.
+Leave this out to search the whole library, which is what a question like "which of my files covers X" wants.
+A document attached to the current message already has its text in front of you; only search it when the text was truncated.`;
 
 export const SET_MEMORY_DESCRIPTION = "Saves important information about the user into memory.";
 

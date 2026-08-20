@@ -12,7 +12,7 @@
     "build": "vite build",
     "start": "tsx src/server/main.ts",
     "typecheck": "tsc --noEmit",
-    "audit": "tsx scripts/audit-dead.ts && tsx scripts/audit-doc-schema.ts && tsx scripts/audit-schema.ts && tsx scripts/audit-prompt.ts && tsx scripts/audit-sessions.ts && tsx scripts/audit-auth.ts && tsx scripts/audit-skills.ts && tsx scripts/audit-generation.ts && tsx scripts/audit-coding.ts && tsx scripts/audit-approvals.ts",
+    "audit": "tsx scripts/audit-dead.ts && tsx scripts/audit-doc-schema.ts && tsx scripts/audit-schema.ts && tsx scripts/audit-prompt.ts && tsx scripts/audit-payload.ts && tsx scripts/audit-markdown.tsx && tsx scripts/audit-sessions.ts && tsx scripts/audit-auth.ts && tsx scripts/audit-skills.ts && tsx scripts/audit-generation.ts && tsx scripts/audit-search.ts && tsx scripts/audit-coding.ts && tsx scripts/audit-approvals.ts",
     "e2e": "tsx scripts/e2e.ts",
     "tidy": "tsx scripts/tidy.ts",
     "access-code": "tsx scripts/access-code.ts"

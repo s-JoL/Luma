@@ -107,6 +107,50 @@ function buildFileSearchContext(files: SearchableFile[]) {
   return lines.join("\n");
 }
 
+/** A document sent with this turn, with as much of its text as fits. */
+export interface AttachedDocument {
+  id: string;
+  name: string;
+  text: string;
+  /** True when `text` is the head of a longer document. */
+  truncated: boolean;
+}
+
+/**
+ * The text of what the reader just attached, placed in front of the model.
+ *
+ * Naming the file in the searchable list was not the same as handing over the
+ * document, and the difference showed: asked what was in the attachment, the
+ * model reached for `file_search`, which searches the whole library, and read
+ * back passages from unrelated files. A document that arrives with a question is
+ * part of the question. Retrieval is for finding things in a library, not for
+ * reading the page someone is holding out.
+ *
+ * Only this turn carries the text. Later turns keep the reference line the
+ * transcript stores, and reaching a document again is what `file_search` with
+ * `file_ids` is for — the same arrangement as history images, where the pixels
+ * are in the turn that sent them and later turns get a line and `view_image`.
+ */
+function buildAttachmentContext(documents: AttachedDocument[]) {
+  if (!documents.length) return "";
+  const blocks = documents.map((document) => {
+    const note = document.truncated
+      ? `\n[Truncated. Search the rest with file_search, passing file_ids: ["${document.id}"].]`
+      : "";
+    return `## ${document.name}\n\n${document.text}${note}`;
+  });
+  const names = documents.map((document) => document.name).join("、");
+  return [
+    "# Documents attached to this message",
+    "",
+    `The reader sent ${documents.length === 1 ? "this" : "these"} with the current request, and the full text is below. Answer from it directly.`,
+    "",
+    `Do not call file_search for ${names} — you are already looking at ${documents.length === 1 ? "it" : "them"}, and a search would return passages from other files instead. Search only where a block below says it was truncated, and then pass that file's id in file_ids.`,
+    "",
+    blocks.join("\n\n"),
+  ].join("\n");
+}
+
 export function buildModelSystemPrompt(input: {
   staticPrompt: string;
   memories: MemoryRow[];
@@ -115,6 +159,8 @@ export function buildModelSystemPrompt(input: {
   memoryEnabled: boolean;
   memoryTokenLimit: number;
   webEnabled: boolean;
+  /** Documents sent with this turn, text included. */
+  attachments?: AttachedDocument[];
   /** One line per available skill. Stable, so it sits in the cached prefix. */
   skillCatalogue?: string;
   now?: string | number | Date;
@@ -139,6 +185,10 @@ export function buildModelSystemPrompt(input: {
       : "",
     input.filesEnabled ? buildFileSearchContext(input.searchableFiles) : "",
     input.memoryEnabled ? formatMemoryContext(input.memories, input.memoryTokenLimit) : "",
+    // Last, and deliberately: this is the largest volatile block and the one
+    // most specific to the turn, so nothing that could have been cached sits
+    // behind it.
+    buildAttachmentContext(input.attachments ?? []),
   ];
   return [...stableParts, ...volatileParts].filter(Boolean).join("\n\n");
 }

@@ -1,359 +1,221 @@
-# Architecture
+# 架构
 
-Luma is a single-user agent workspace. One Node process, no external services,
-and its own data on disk. It replaces a LibreChat deployment that used four
-processes, two databases and a `.env` file.
+一个 Node 进程，两份 SQLite，数据全在 `data/`。Web 静态包和 `/v1` 由同一进程
+送出。没有 Python 服务、没有 Postgres、没有独立的 MCP 监督进程。
 
-What it is *for*, and what it deliberately does not do, is `00-product.md`. The
-constraints below are the shape that follows from it; the reasons live there.
-
-## Constraints that shape everything
-
-1. **One process.** No Python, no PostgreSQL, no separate MCP supervisor. RAG,
-   vector search and MCP clients all live inside the Node process. Two SQLite
-   files, both embedded: `luma.sqlite` and the session trees in
-   `sessions.sqlite` (`02-data-model.md`).
-2. **No configuration files.** No `.env`, no YAML, no JSON config. Every setting
-   and every secret lives in SQLite and is edited from a client.
-3. **API-first.** The web UI is one client among several. An iOS/iPadOS app is
-   planned, so no endpoint may assume a browser, a cookie, or a same-origin
-   page. The web bundle is static and talks only to `/v1`.
-4. **Capabilities are one document, not a schema per client.** Every capability's
-   configuration is a field on one `Capabilities` object with server-side
-   defaults, so adding a setting costs no migration and no client-side plumbing
-   beyond the control that edits it. Where a form genuinely cannot be written in
-   advance — a generation backend's parameters, an MCP server's tool — the schema
-   comes from the server and the client renders it.
-5. **Behavioural parity with LibreChat** on the paths that were actually used.
-   See `04-tools.md` for the contracts and the places we deliberately diverge.
-
-## Process layout
+## 进程
 
 ```
-luma (node)                                   :8090
-├── http            /v1 routes + static web bundle
-├── agent           session tree, context assembly, compaction, pi loop, titles
-├── capabilities    registry: web_search, file_search, memory, mcp, code, skills
-├── generation      adapters (comfy, hosted images, async video) + job queue
-├── rag             extract → chunk → embed → cosine + FTS5
-├── mcp             clients over stdio, Streamable HTTP, legacy HTTP+SSE
-└── store           node:sqlite
+luma (node)                                :8090
+├── http         /v1 + dist/ 静态包
+├── agent        Runtime → pi Agent
+├── generation   adapters + job 队列
+├── capabilities 记忆 / 文件检索 / 搜索 / 编码 / skills / MCP
+├── rag          extract → chunk → embed → 检索
+└── store        node:sqlite
+```
 
+入口：`src/server/main.ts`。`scripts/start.ps1`（Windows）/ `start.sh`（macOS、
+Linux）重建前端、拉起进程、可选开 Cloudflare 隧道并打印访问码。`-Local` 只听
+`127.0.0.1`，不开隧道。预热 ComfyUI 只有 Windows 那条路做：`comfy.ps1` 知道
+Desktop 装在哪，POSIX 上没有对应的启动器，ComfyUI 由人自己开。
+
+环境变量：`LUMA_ROOT`、`LUMA_DATA_DIR`、`LUMA_HOST`（默认 `127.0.0.1`）、
+`LUMA_PORT`（默认 `8090`）、`LUMA_TRUST_PROXY`。
+
+Node 要 24 以上（`node:sqlite`）。`luma/runtime/node` 是随开发机装的 Windows
+构建，gitignored，不在系统 PATH 上；`scripts/common.sh` 先问它版本再用它，所以
+在 macOS 和 Linux 上它会被跳过，改用 PATH 上的 Node 24。`runtime/`、`run/`、
+`ComfyUI/` 都是按机器安装的，仓库里没有不等于哪里坏了。
+
+## 目录
+
+```
 data/
-├── luma.sqlite     everything persistent
-├── sessions.sqlite conversation trees, owned by pi's session backend
-├── master.key      32 random bytes, 0600, decrypts secrets in luma.sqlite
-├── files/          uploaded and authored file bytes
-├── skills/         <name>/SKILL.md, written procedures loaded on demand
-├── workflows/      ComfyUI graphs in API format; a new one is a file, not a release
-├── coding-trash/   what the code tools overwrote or deleted, plus a journal
-└── assets/         generated images and videos, metadata sidecars, thumbnails
+├── luma.sqlite      应用状态
+├── sessions.sqlite  pi 的会话树（单独文件，避免和设备 session 表撞名）
+├── master.key       32 字节，0600，解 secrets
+├── files/           上传与手写文档
+├── skills/          <name>/SKILL.md
+├── workflows/       ComfyUI API 格式图；加一个 workflow 是加文件，不是发版
+└── assets/          生成的图和视频、sidecar、缩略图
 
-runtime/           bundled binaries, git-ignored, ~150 MB
-├── node/           Node 24 — the only copy on this machine
-└── cloudflared/    connector plus the tunnel config
-
-run/               pid files and process logs, written by scripts/start.ps1|.sh
+runtime/             自带 Node 与 cloudflared，gitignored
+run/                 pid 与日志
+dist/                Vite 打好的 Web 包
 ```
 
-Nothing outside `data/` and `run/` is written at runtime. Deleting `data/` is a
-factory reset.
+运行时只写 `data/` 和 `run/`。删 `data/` 等于出厂。
 
-`scripts/start.ps1` is the supported way to run it: rebuild the bundle, start
-the server, raise the tunnel, print the access code. `scripts/restart.ps1` is
-its development counterpart — foreground, no tunnel, and pointed at the audit
-data directory rather than the real one, so a test run cannot write the
-transcript it is meant to be testing next to.
+ComfyUI 保持私有，只听 `127.0.0.1:8188`。Luma 通过 `comfy-workflow` adapter
+调它，不把它暴露到公网。
 
-### The same scripts on macOS and Linux
+## 鉴权
 
-`start.sh`, `stop.sh`, `restart.sh` and `show-code.sh` are the POSIX
-counterparts, same ports, same environment variables and same pid files, with
-`--port` and `--local` where PowerShell takes `-Port` and `-Local`. Run them as
-`bash scripts/start.sh`: a checkout on Windows carries no execute bit, so
-depending on one would make the scripts un-runnable on the machine they were
-written on.
+单用户。首次启动生成访问码（Crockford base32），进加密保险箱，启动时打印。
+可选 TOTP。
 
-Two things genuinely differ, rather than being translated. `runtime/node` is a
-Windows build, so `scripts/common.sh` asks each candidate for its version instead
-of merely testing that the file is there, and falls back to a system Node 24+
-with an explicit error when neither can run. And stopping is two steps rather than
-one: `Stop-Process -Force` is a kill with no shutdown, which is why the Windows
-script has to sweep up MCP servers that outlived their parent, whereas the POSIX
-version sends `SIGTERM`, waits ten seconds for the server to close its own stdio
-children, and only then sends `SIGKILL`. ComfyUI has no POSIX launcher because
-`comfy.ps1` drives the Windows Desktop installation under `%LOCALAPPDATA%`;
-`start.sh` says so and carries on, since Luma runs without it.
+`POST /v1/auth/token` 换 token。token 哈希进 `sessions` 表；响应里同时给 JSON
+和 HttpOnly cookie（`SameSite=Strict`）。之后 Bearer 或 cookie 都行。用 cookie
+做非安全方法时必须同源（`Sec-Fetch-Site` / `Origin`），这样 `<img src="/v1/images/…">`
+能过，CSRF 不能。
 
-ComfyUI is a separate process that Luma reaches over HTTP at `127.0.0.1:8188`,
-and `scripts/comfy.ps1` starts it because an image tool that cannot reach it
-fails at the point of use rather than at startup. From a cold file cache it can
-take three minutes to index models and import custom nodes, so `start.ps1`
-launches it alongside the build and waits only long enough to catch a process
-that dies on startup — a bad install or a taken port fails within seconds, and
-anything slower is just loading. Luma is fully usable meanwhile, minus the local
-image tools. The program is the
-ComfyUI Desktop installation under `%LOCALAPPDATA%`, while its models, inputs
-and outputs are the workspace copies under `ComfyUI/shared` — the split that
-`--base-directory` expresses. Custom nodes live in `ComfyUI/runtime/custom_nodes`
-and are linked into both the install and the base directory, so the Desktop app
-and the headless server see the same set.
+空闲 30 天、硬上限 180 天。7 天后可轮换。改访问码、开关 TOTP、踢会话要 step-up
+（再提交访问码，已开 TOTP 还要验证码）。失败次数按来源计，不按整站计。
 
-`stop.ps1 -IncludeComfy` shuts ComfyUI down too. Plain `stop.ps1` deliberately
-does not, because `start.ps1` calls it before every launch and reloading the
-models costs a minute.
+公网：Cloudflare Tunnel 或 Tailscale。隧道前要设 `LUMA_TRUST_PROXY=1`，否则
+所有请求看起来都来自 127.0.0.1，限流和 HTTPS 判断会坏。ComfyUI 不走隧道。
 
-## Capabilities
+## 两份数据库
 
-A capability is a set of tools plus the configuration that decides whether they
-are offered. All of it is one typed object — `Capabilities` in
-`src/shared/types.ts` — read whole on `GET /v1/capabilities` and patched whole
-back. Defaults live in `src/server/config.ts` and are merged over what is stored,
-so a capability can gain a field without a migration and without a null check at
-every use.
+**`sessions.sqlite`** 是对话的真相：pi 的 entry 树、lane、压缩点。编辑/重试是
+把 lane 移到某条 entry 的父节点，被放弃的枝留在树上。
 
-| Field | Offers | Configured with |
+**`luma.sqlite`** 是应用状态。其中 `messages` 是当前枝的投影，给客户端读；
+`seq` 对客户端，`entry_id` 指回树上的点。rewind 之后整表重投影。
+
+密钥只写不读：`secrets` 表是 AES-GCM 密文，HTTP 只回答「有没有」。
+
+下面的 `CREATE TABLE` 列名必须和 `src/server/store/schema.sql` 一致
+（`scripts/audit-doc-schema.ts` 会核对）。类型在文档里从简。
+
+```sql
+CREATE TABLE meta (
+  key, value
+)
+
+CREATE TABLE settings (
+  key, value, updated_at
+)
+
+CREATE TABLE secrets (
+  name, iv, tag, ciphertext, updated_at
+)
+
+CREATE TABLE sessions (
+  token_hash, device, created_at, last_seen, expires_at
+)
+
+CREATE TABLE providers (
+  id, name, base_url, auth, enabled, sort_order, created_at, updated_at
+)
+
+CREATE TABLE models (
+  id, provider_id, name, model, enabled, pinned, agent_tool, reasoning, input,
+  context_window, max_tokens, thinking_level, thinking_level_map, api_mode,
+  kind, ops, params, librechat_compat, system_prompt, temperature, top_p,
+  pricing, compat, sort_order, created_at, updated_at
+)
+
+CREATE TABLE mcp_servers (
+  id, title, enabled, command, url, args, env, headers, sort_order,
+  created_at, updated_at
+)
+
+CREATE TABLE conversations (
+  id, title, model_id, profile_id, archived, created_at, updated_at
+)
+
+CREATE TABLE messages (
+  id, conversation_id, seq, role, content, entry_id, created_at
+)
+
+CREATE TABLE runs (
+  id, conversation_id, status, model_id, error, created_at, updated_at
+)
+
+CREATE TABLE events (
+  seq, run_id, conversation_id, type, data, created_at
+)
+
+CREATE TABLE approvals (
+  id, run_id, conversation_id, tool_name, action, summary, detail, status,
+  created_at, updated_at
+)
+
+CREATE TABLE memories (
+  key, value, tokens, updated_at
+)
+
+CREATE TABLE files (
+  id, name, mime, bytes, disk_path, sha256, conversation_id, source,
+  embedding_status, embedding_error, page_count, width, height, created_at
+)
+
+CREATE TABLE chunks (
+  id, file_id, idx, page, text
+)
+
+CREATE TABLE embeddings (
+  chunk_id, file_id, model, dim, vector
+)
+
+CREATE TABLE image_assets (
+  image_id, mime, width, height, provider, model, parent_image_ids, created_at
+)
+
+CREATE TABLE video_assets (
+  video_id, mime, width, height, duration_ms, poster_image_id, provider, model,
+  parent_image_ids, created_at
+)
+
+CREATE TABLE jobs (
+  id, kind, op, model_id, model_name, conversation_id, status, progress, note,
+  params, sources, assets, error, provider_job_id, created_at, started_at,
+  finished_at, updated_at
+)
+
+CREATE TABLE profiles (
+  id, name, chat_model_id, image_model_id, edit_model_id, video_model_id,
+  capabilities, mcp_servers, global_prompt, tool_prompt, sort_order,
+  created_at, updated_at
+)
+```
+
+`chunks_fts` 是 FTS5 虚表，跟 `chunks` 同步，不单独建业务表。
+
+几个关系：
+
+- `files` 是图书馆。文档按 sha256 去重并走 RAG；图和视频是 `img_` / `vid_`
+  id，进图库，不切块。
+- `image_assets` / `video_assets` 是血缘（模型、父图、时长、封面）。字节在
+  `assets/files`。
+- `jobs` 一行就是一次生成的全部状态。客户端读这一行，不重放事件。
+  `conversation_id` 可空、不是外键：创作台的活不属于某段对话，删对话不能把
+  还在图书馆里的作品记录一起删掉。
+- `events` 是 run 的增量日志，客户端用 `Last-Event-ID` / `after=` 续。流式
+  delta 在 run 结束后约 120 秒剪掉。
+
+## 配置
+
+没有 `.env` 业务配置。能在界面改的都在 `settings` JSON 和表行里。提示词种子在
+`src/server/prompts/defaults.ts`，第一次启动写入，之后人拥有。
+
+## 怎么验
+
+三层，越往下越贵：
+
+| 命令 | 要什么 | 管什么 |
 |---|---|---|
-| `memory` | `set_memory`, `delete_memory` | suggested keys, token and char limits |
-| `files` | `file_search` | search on/off, retrieval mode |
-| `web` | `web_search` | which search adapter answers, and its key (write-only) |
-| `coding` | ten `code` tools | workspace root, `read`/`write`/`shell` |
-| `embedding` | the index behind `files` | base URL, model, dimensions, chunking |
-| `studio` | the studio screen | which MCP servers it may drive |
+| `npm run typecheck` | 无 | 类型 |
+| `npm run audit` | 无：不联网、不开端口、不碰 `data/` | 十三个静态检查：死导出、文档与 `schema.sql` 对齐、工具 schema 收窄、提示词装配顺序、发给供应商的 payload 形状、markdown 管线、session 树与压缩、鉴权与限流、skills、生成 adapter 与 job 队列（假后端）、搜索 adapter（假后端）、编码工具、审批 |
+| `npm run e2e` | 一个跑着的实例 + 一个聊天模型 | 三十几项真实 HTTP 验收：登录、流式、续流、幂等、停止、编辑/重试/继续、记忆、文件检索、审批、分页、搜索、错误信封、job 队列 |
 
-Two of them are not on this list because they need no configuration: `skills` is
-on when a skill exists on disk, and generation is on when a generation model is
-configured. A capability that needs a key reports only whether one is set —
-`hasTavilyKey`, `hasKey` — so a client can show "key missing" without the
-plaintext ever leaving the server.
+`audit` 里每个脚本自己造数据、自己收拾，所以它是改完随手跑的那一层。`e2e` 打的是
+`audit-db.ts --clone` 出来的那份克隆（8095、`data-audit`、`AUDITCODE`），不是 8090
+上的真实实例。
 
-A profile selects a *subset* of what the deployment configured
-(`08-generation.md §Profiles`): it can withhold a capability from one
-conversation, never grant one the deployment has not set up.
+可选的东西一律 skip，不是 fail：没有搜索密钥、本地 ComfyUI 没启动、没配视频
+模型，都跳过。只有一个聊天密钥的机器也应该跑出全绿。
 
-### The `studio` capability
+故意留在链外、要手动跑的：
 
-The studio is a capability rather than a hardcoded screen, so turning it off
-removes it from every client. Its config is a list of MCP servers to expose, and
-a server may be listed here while being disabled for chat — that combination
-connects the process and routes its tools to the studio alone, which is how an
-image backend can be available for deliberate work without enlarging the agent's
-tool list on every turn.
+| 脚本 | 为什么在链外 |
+|---|---|
+| `audit-models.ts` | 每个已配置的对话模型真跑一轮，要密钥要花钱 |
+| `verify-generation-live.ts` | 真出图/出视频，看一眼质量用的，花钱 |
+| `security-check.ts` | 暴力破解的减速曲线本身就是几十秒，还会留下冷却计数 |
+| `audit-bisect.ts`、`audit-db.ts`、`reclaim-db.ts`、`tidy.ts`、`access-code.ts` | 工具，不是断言 |
 
-Generation models join the same list. A model whose `kind` is `image` or `video`
-is not a conversational endpoint, so it is excluded from the agent's model graph
-and surfaced as a studio tool instead, described by the schema its adapter
-declares — the same schema the agent's tool advertises. The studio therefore has
-one kind of thing in it — a tool with a schema — whether the pixels come from a
-local ComfyUI workflow or a remote API, and the local case is no longer an MCP
-sidecar (`08-generation.md`).
-
-## One file library
-
-Everything the user owns is a `files` row: uploads, notes written in the app, and
-images produced by any tool. This was not originally true — generated images
-lived only in the asset directory — and the split meant the Files screen could not
-show the majority of what existed. Tools still write bytes first and report
-afterwards, so the reconciliation is explicit: a generated image is *adopted*
-into `files` at the moment it is registered, and startup adopts anything an older
-build left behind.
-
-Filtering is server-side, by kind, provenance and filename. The library is
-several hundred images; sending all of them so the browser can filter would undo
-the thumbnailing that makes the screen usable in the first place.
-
-### The `code` capability
-
-Filesystem and shell access confined to one configured workspace, behind
-independent read / write / shell switches that all start off. Ten tools; schemas
-and the properties that hold across them are in `04-tools.md §5`. Two pieces of
-it live outside the tools themselves, because they are policy rather than
-mechanism: destructive calls are held at a preflight gate until a person answers
-(`approvals`, `03-api.md`), and every overwrite or delete is copied into
-`data/coding-trash` first so a wrong edit is recoverable rather than final.
-
-### The `skills` capability
-
-Written procedures the model can pull in on demand, from
-`data/skills/<name>/SKILL.md`. It has no config and no switch: a conversation
-gains it by there being a skill on disk. See `04-tools.md §6`.
-
-## Multi-client design
-
-The web app and the future iOS app are peers (`07-ios-app-prd.md` for what that
-app is, `09-ios-implementation.md` for how it is built). Consequences that must
-hold from the first commit, because retrofitting them is expensive:
-
-**Device-scoped tokens.** The access code is exchanged once for a long-lived
-device token. Each device gets its own row and can be revoked independently.
-The web client keeps its token in an `HttpOnly` cookie set by the server; native
-clients keep it in the Keychain and send `Authorization: Bearer`. Both transports
-resolve to the same token record.
-
-**Runs are server-side objects.** A run keeps executing when every client
-disconnects. This already has to be true for browser refresh; it is what makes
-the phone usable at all, since iOS suspends background connections aggressively.
-
-**Two ways to read a run.** SSE for live streaming, and a polling endpoint that
-returns the same events as a JSON batch. Native clients on flaky mobile networks
-use the poll path when the app returns to the foreground and the stream has
-died. Both are driven by the same `after=<seq>` cursor, so they interleave
-safely.
-
-**No base64 in payloads.** Images and files are always URLs. `GET
-/v1/images/:id?w=` serves a cached WebP at the requested width, so a phone pulls
-tens of kilobytes into a message list instead of a 4 MB PNG, and the immutable
-cache headers mean scrolling back costs nothing.
-
-**The client survives losing the connection.** A stream that dies mid-run is not
-a failed run: the client reattaches on `visibilitychange` and `online` by
-re-reading the transcript and resuming from its `after=<seq>` cursor, and it
-never clears what is on screen unless the re-read succeeded. This is the
-difference between an iPhone returning from the background to a live answer and
-returning to a blank turn.
-
-**Input is keyed to the pointer, not the screen width.** A touch keyboard has no
-Shift, so on a coarse pointer Enter must stay a literal newline and sending
-belongs to the button; stealing Enter there leaves no way to type a line break
-at all. Hit targets grow to 44px and text fields to 16px under the same query,
-the latter because iOS zooms the viewport into anything smaller on focus. Per-turn
-actions, which hover reveals on a desktop, stay visible there for the same
-reason. Width is the wrong signal for any of this — a narrow window on a laptop
-still has a mouse.
-
-**A client sees one version of a transcript.** Editing or regenerating a turn
-moves the conversation's branch pointer back and re-projects the messages from
-there, so every client reads the same single history and no client has to render a
-tree. The abandoned turns stay in the session tree — that is free, and it is what
-makes an accidental edit recoverable — but nothing in the API offers them, because
-reconciling a visible fork on every client buys almost nothing. Sequence numbers
-are reused after a rewind, so a client that rewinds refetches the transcript
-instead of topping up from its cursor.
-
-**Cursor pagination everywhere.** Conversation and message lists are paged. A
-2000-message history must not be a single response.
-
-**Bootstrap is one call.** `GET /v1/bootstrap` returns models, providers,
-profiles, capabilities, prompts, MCP status, limits and the server version — every
-answer needed to render settings and start a run. Conversations are deliberately
-not in it, because that list is paged and changes far more often than settings do.
-
-## Event durability
-
-The previous implementation grew a 310 MB SQLite file, almost entirely `events`
-rows, and the cause was not that deltas were written but that deleted rows are
-never given back: SQLite hands a freed page to its freelist and leaves the file
-the size it grew to.
-
-So every event goes through one path — a row in `events`, broadcast to
-subscribers — and the difference between an event that lasts and one that does not
-is when it is deleted:
-
-| Event | Kept | Purpose |
-|---|---|---|
-| `message.delta` | 120 s past the run settling | live typing, and the replay a polling client needs |
-| `job.progress` | 120 s past the run settling | how far a generation got; the job row is the real answer |
-| `message.end` | forever | the finalized message |
-| `tool.execution.start` / `.end` | forever | tool cards, including the `intent` label |
-| `run.*` | forever | lifecycle |
-
-One durable path is what makes reconnecting the same operation whether the run is
-live or long finished: the client asks for everything after its cursor and gets
-it. Deltas outlive their run by two minutes because a suspended phone reads in
-bursts, and deleting them the instant a run completes would erase text nobody had
-received yet. After that they are pruned, and `PRAGMA incremental_vacuum` returns
-the pages — which is the part the old implementation was missing.
-
-## Secrets
-
-`data/master.key` holds 32 random bytes generated on first start, mode 0600.
-Secrets are stored in `luma.sqlite` as AES-256-GCM ciphertext with a per-record IV.
-This mirrors LibreChat's `CREDS_KEY`/`CREDS_IV` scheme without asking anyone to
-generate hex by hand.
-
-Secret values are write-only over the API. A client can set one, see whether one
-is set, and clear it. It can never read one back.
-
-## Exposure
-
-Luma is reachable from a phone on a mobile network, which means it is reachable
-by everyone else too. The posture is defence in depth, because the single-user
-assumption that makes the rest of the design simple also means one compromised
-credential is total.
-
-The outer layer is Cloudflare Tunnel with Access in front of it: the origin makes
-an outbound connection only, so no port is forwarded and the machine has no
-address to scan. Access authenticates before a request reaches Node. That layer
-is deliberately not trusted on its own — a tunnel misconfiguration should degrade
-to "still needs a password", not "wide open" — so the application authenticates
-independently with an access code plus TOTP, and rate-limits failures per source
-address with a much looser global cap so an attacker cannot lock the owner out by
-failing on purpose.
-
-That independence is currently load-bearing rather than theoretical: the Access
-policy is not yet applied to the deployed hostname, so the access code and the
-rate limiter are the live barrier. See `06-remote-access.md`.
-
-Session cookies are `HttpOnly`, `Secure` and `SameSite=Strict`, and
-state-changing requests validate their origin, which together close the
-cross-site paths that a bearer-token-only design leaves open once cookies exist.
-Sessions are listable and individually revocable, since the practical response to
-a lost phone is revoking one device rather than rotating everything. Setup is in
-`06-remote-access.md`.
-
-## Verification
-
-There is no unit-test suite. What a single-user deployment can actually be wrong
-about is the wiring between real parts — a provider that rejects a field, a
-stream that stops arriving, a job that never settles — and none of that is
-reachable by mocking. So verification is two layers, both of which run against
-running processes:
-
-| Command | Needs | Proves |
-|---|---|---|
-| `npm run typecheck` | nothing | `src` and `scripts` compile, including the audit drivers |
-| `npm run audit` | nothing external | no export without a caller, `02-data-model.md` still describing the real tables, schema/type agreement, prompt order, session and compaction behaviour, skills, generation adapters against local stubs, coding tools, approvals |
-| `npm run e2e` | a running server | the HTTP contract end to end: streaming, files, retrieval, generation, jobs, profiles, approvals, pagination, search, and the error envelope |
-
-`npm run e2e` talks to the audit instance — `audit-db.ts --clone` copies
-configuration and provider keys into `data-audit/`, `restart.ps1` or `restart.sh`
-serves it on 8095 with the access code `AUDITCODE` — so acceptance runs use the real models
-and the real GPU against a throwaway transcript. A substring argument runs one
-check (`npm run e2e -- job`).
-
-The remaining `scripts/audit-*.ts` are single-purpose probes for when something
-is already wrong: `audit-db.ts` reports on the live database, `audit-payload.ts`
-captures the exact JSON a provider receives, `audit-bisect.ts` finds which field
-a provider rejects, `audit-models.ts` runs one turn per configured model,
-`audit-markdown.tsx` renders the transcript pipeline in Node.
-`security-check.ts` is separate from the e2e run because it trips the login rate
-limiter on purpose.
-
-The browser layer is checked by hand. A driver that asserted on the previous
-UI's class names was deleted with that UI rather than retargeted: what it
-actually proved — nothing overflows at 390px, the transcript renders, an approval
-card can be answered — depends on hooks the new UI has not been asked to promise
-yet, and a suite pinned to utility classes would fail on every restyle without
-catching anything.
-
-## Alignment posture
-
-Behavioural equivalence with LibreChat, not byte equality. Where LibreChat's
-behaviour is worse for this deployment we diverge deliberately and record it:
-
-| LibreChat | Luma | Why |
-|---|---|---|
-| `resendFiles` re-encodes every historical image each turn | Past images are named in the transcript; the model loads one with `view_image` | A long image conversation costs a fortune otherwise |
-| Tool results hard-truncated at 12 000 chars | Bounded by pi's own dual limit — `DEFAULT_MAX_LINES` 2 000 or `DEFAULT_MAX_BYTES` 50 KB, whichever binds first, always cut on a line boundary — and the pruner still drops whole messages once the branch stops fitting | One character count either wastes context or cuts the compiler error in half, and it charged a Chinese result three times what it charged an English one of the same length |
-| Memory writes can run on a background agent | Explicit tool calls only | `agent.enabled: false` was already the configured behaviour |
-
-That bound has exactly two audiences, and the current turn is neither of them: it
-is applied where a message is persisted and where the context for a call is
-assembled (`src/server/agent/messages.ts`), so the model re-reads a bounded
-result and the transcript stores a bounded one, while the client watching the
-call happen still receives every byte the tool produced. The two limits are
-separate constants that happen to be equal, because tightening the projected one
-costs nothing — the next turn projects the stored result again — and tightening
-the persisted one throws bytes away for good.
-
-Everything else in `04-tools.md` is copied, including description strings.
+`LUMA_E2E_VIDEO=1` 才会真渲染一段视频；`LUMA_E2E_STUB=1` 强制用
+`stub-openai.ts` 顶替模型，`LUMA_E2E_LIVE=1` 强制用真模型。

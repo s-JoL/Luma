@@ -1,4 +1,4 @@
-import { Agent, buildSessionContext, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import { buildSessionContext, convertToLlm, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 import { SECRET, type Config } from "../config.ts";
 import type { SecretVault } from "../crypto/secrets.ts";
@@ -16,6 +16,7 @@ import {
   countTokens,
   renderPromptIdentity,
   resolveModelSystemPrompt,
+  type AttachedDocument,
 } from "../prompts/context.ts";
 import type { Retrieval } from "../rag/retrieval.ts";
 import type { Store } from "../store/store.ts";
@@ -27,6 +28,8 @@ import { loadSkillLibrary, skillCatalogue, skillTools } from "../tools/skills.ts
 import { viewImageTool } from "../tools/vision.ts";
 import { webSearchTool } from "../tools/web-search.ts";
 import { compactIfNeeded, contextReserve } from "./compaction.ts";
+import { createPiLoop, type AgentLoop, type LoopFactory } from "./loop.ts";
+import { stringifyToolEnums } from "./tool-schema.ts";
 import {
   boundToolResults,
   compactToolText,
@@ -37,7 +40,8 @@ import {
   pruneHistory,
   transportSafe,
   videoRef,
-  withAppendedRef,
+  withAppendedRefs,
+  type FileRef,
   type ImageRef,
   type VideoRef,
 } from "./messages.ts";
@@ -67,6 +71,58 @@ export interface StartInput {
 }
 
 /**
+ * How much of an attachment is handed to the model outright.
+ *
+ * Generous enough that an ordinary document — a contract, a report, a chapter —
+ * arrives whole, and bounded because a turn's budget is shared with the history
+ * and the tools. Past the ceiling the head is sent and the rest stays reachable
+ * through `file_search` scoped to that file, which is a worse answer than the
+ * whole document and a much better one than a library-wide search for text the
+ * reader was holding out.
+ */
+const ATTACHMENT_TOKENS_PER_FILE = 8_000;
+const ATTACHMENT_TOKENS_TOTAL = 20_000;
+
+/**
+ * The text of each attached document, from the chunks the upload already wrote.
+ * Reading the chunks rather than re-extracting means PDFs and DOCX files need no
+ * second parse here, and a file with no chunks — an unextractable format, or one
+ * whose indexing failed — contributes nothing rather than an empty heading.
+ */
+function readAttachedDocuments(store: Store, documents: Array<{ id: string; name: string }>): AttachedDocument[] {
+  const attached: AttachedDocument[] = [];
+  let spent = 0;
+  for (const document of documents) {
+    if (spent >= ATTACHMENT_TOKENS_TOTAL) break;
+    const chunks = store.chunks(document.id);
+    if (!chunks.length) continue;
+    const budget = Math.min(ATTACHMENT_TOKENS_PER_FILE, ATTACHMENT_TOKENS_TOTAL - spent);
+    const kept: string[] = [];
+    let used = 0;
+    let truncated = false;
+    for (const chunk of chunks) {
+      const cost = countTokens(chunk.text);
+      if (used + cost > budget) {
+        truncated = true;
+        break;
+      }
+      kept.push(chunk.text);
+      used += cost;
+    }
+    // A single chunk over the per-file budget would otherwise send nothing at
+    // all, which reads to the model as an empty document rather than a long one.
+    if (!kept.length) {
+      kept.push(chunks[0]!.text);
+      used = countTokens(chunks[0]!.text);
+      truncated = chunks.length > 1;
+    }
+    spent += used;
+    attached.push({ id: document.id, name: document.name, text: kept.join("\n\n"), truncated });
+  }
+  return attached;
+}
+
+/**
  * A stopped run unwinds before its partial assistant message is persisted, so
  * the transcript ends on whatever preceded it. That is precisely the shape
  * `Agent.continue()` accepts, and resuming there costs no extra turn.
@@ -81,7 +137,7 @@ interface ActiveRun {
    * Absent while the run is still preparing. Summarizing a long conversation is
    * itself a model call, so a run has to be stoppable before its loop exists.
    */
-  agent?: Agent;
+  agent?: AgentLoop;
   runId: string;
   /** `agent.abort()` unwinds cleanly, so the intent has to be recorded here. */
   aborted: boolean;
@@ -108,6 +164,7 @@ export class Runtime {
     private readonly bus: EventBus,
     private readonly sessions: Sessions,
     private readonly jobs: Jobs,
+    private readonly createLoop: LoopFactory = createPiLoop,
   ) {}
 
   isActive(conversationId: string) {
@@ -135,6 +192,15 @@ export class Runtime {
     const uploadImageRefs: ImageRef[] = [];
     const media: Array<{ type: "image"; data: string; mimeType: string }> = [];
     const attachmentDocuments: Array<{ id: string; name: string }> = [];
+    /**
+     * Documents attached to this turn, as refs to append to the message that
+     * carried them. A picture becomes part of the message on its own — the
+     * base64 goes to the model and `persistMessage` swaps in the ref — but a
+     * document has no such part, and naming it only in the system prompt's
+     * searchable list left the turn itself with no record of the attachment: the
+     * transcript could not show it, and editing the turn could not re-send it.
+     */
+    const uploadFileRefs: FileRef[] = [];
     for (const fileId of input.attachments ?? []) {
       const file = this.store.getFile(fileId);
       if (!file) continue;
@@ -154,8 +220,17 @@ export class Runtime {
         });
       } else {
         attachmentDocuments.push({ id: file.id, name: file.name });
+        uploadFileRefs.push({
+          type: "file_ref",
+          file_id: file.id,
+          name: file.name,
+          mime_type: file.mime,
+          bytes: file.bytes,
+        });
       }
     }
+
+    const attachedText = readAttachedDocuments(this.store, attachmentDocuments);
 
     const staticPrompt = renderPromptIdentity(
       resolveModelSystemPrompt(composeStaticPrompt(prompts.globalPrompt, prompts.toolPrompt), spec.systemPrompt),
@@ -163,9 +238,17 @@ export class Runtime {
       provider.name,
     );
 
+    // A document whose text is already in the prompt is left out of the list of
+    // things to search. Listing it there is an instruction, and the model obeyed
+    // it: told "use file_search to find information within probe.md (just
+    // attached by user)", it searched — library-wide — and summarised a
+    // different file, with the attachment's own text sitting further down the
+    // same prompt. What stays on the list is an attachment too large to inline,
+    // which genuinely does have to be reached by searching.
+    const inlined = new Set(attachedText.map((document) => document.id));
     const attachedIds = new Set(attachmentDocuments.map((file) => file.id));
     const searchableFiles = [
-      ...attachmentDocuments.map((file) => ({ ...file, currentRequest: true })),
+      ...attachmentDocuments.filter((file) => !inlined.has(file.id)).map((file) => ({ ...file, currentRequest: true })),
       ...this.store.searchableFiles().filter((file) => !attachedIds.has(file.id)).map((file) => ({
         ...file,
         currentRequest: false,
@@ -179,6 +262,7 @@ export class Runtime {
       staticPrompt,
       memories: this.store.listMemories(),
       searchableFiles,
+      attachments: attachedText,
       memoryEnabled: capabilities.memory.enabled,
       memoryTokenLimit: capabilities.memory.tokenLimit,
       filesEnabled: capabilities.files.enabled && capabilities.files.searchEnabled,
@@ -204,7 +288,13 @@ export class Runtime {
       tools.push(fileSearchTool(this.retrieval, capabilities.files.mode));
     }
     if (capabilities.web.enabled) {
-      tools.push(webSearchTool(() => this.vault.get(SECRET.tavily), capabilities.web.provider));
+      tools.push(
+        webSearchTool({
+          getApiKey: () => this.vault.get(SECRET.tavily),
+          provider: capabilities.web.provider,
+          baseUrl: capabilities.web.baseUrl,
+        }),
+      );
     }
     tools.push(...codingTools(capabilities.coding));
     tools.push(
@@ -238,7 +328,7 @@ export class Runtime {
     this.emit(runId, conversationId, "run.started", { modelId: spec.id, model: spec.name });
 
     let titlePromise = Promise.resolve();
-    let agent: Agent | undefined;
+    let agent: AgentLoop | undefined;
     // Held outside the try so a failure after the tree opens can still close the
     // run's operation. Everything that can throw belongs inside, or a failure
     // would leave the conversation marked active with no run to stop.
@@ -283,7 +373,8 @@ export class Runtime {
       // to the provider, and a conversation with no picture in it can only get
       // an error back. Images attached to this turn arrive as pixels already.
       if (spec.input.includes("image") && hasImageRef(history)) tools.push(viewImageTool(this.store));
-      const usableTokens = this.contextBudget(spec.contextWindow, spec.maxTokens, systemPrompt, tools);
+      const offered = tools.map((tool) => ({ ...tool, parameters: stringifyToolEnums(tool.parameters) }));
+      const usableTokens = this.contextBudget(spec.contextWindow, spec.maxTokens, systemPrompt, offered);
 
       await session.appendRecord({
         type: "operation_started",
@@ -297,15 +388,14 @@ export class Runtime {
         },
       });
 
-      agent = new Agent({
-        initialState: {
-          systemPrompt,
-          model,
-          thinkingLevel: spec.thinkingLevel ?? (spec.reasoning ? "medium" : "off"),
-          tools: tools as never,
-          messages: history,
-        },
-        streamFn: this.registry.streamSimple,
+      agent = this.createLoop({
+        systemPrompt,
+        model,
+        thinkingLevel: spec.thinkingLevel ?? (spec.reasoning ? "medium" : "off"),
+        tools: offered,
+        messages: history,
+        sessionId: conversationId,
+        stream: this.registry.streamSimple,
         // Summaries are custom-role messages. The agent's default converter drops
         // every role it does not recognise, which would silently throw away the
         // summary a compacted conversation depends on.
@@ -313,13 +403,9 @@ export class Runtime {
         // Bounded before the budget is applied, so the pruner counts what will
         // actually be sent rather than the tool's full output.
         transformContext: async (messages) => describeRefs(pruneHistory(boundToolResults(messages), usableTokens)),
-        sessionId: conversationId,
-        steeringMode: "one-at-a-time",
-        followUpMode: "one-at-a-time",
-        toolExecution: "parallel",
-        onPayload: (payload) => applyModelParameters(payload, spec) as never,
-        beforeToolCall: async ({ toolCall, args }) =>
-          this.gate(runId, conversationId, capabilities.coding.workspace, toolCall, args, cancel.signal),
+        onPayload: (payload) => applyModelParameters(payload, spec),
+        beforeToolCall: async ({ toolCall, args }, signal) =>
+          this.gate(runId, conversationId, capabilities.coding.workspace, toolCall, args, signal ?? cancel.signal),
       });
       entry.agent = agent;
 
@@ -343,11 +429,14 @@ export class Runtime {
                 ? uploadImageRefs
                 : [];
           const video = message.role === "toolResult" ? toolVideos.get(String(message.toolCallId)) : undefined;
-          // A video is never sent to the model, so its ref has no base64 part to
-          // replace and has to be appended instead.
-          const stored = video
-            ? withAppendedRef(persistMessage(event.message, refs), video)
-            : persistMessage(event.message, refs);
+          // Documents belong to the message that carried them, which is the
+          // first user message of the run. Draining the list is what keeps a
+          // steered message — also role user — from collecting them again.
+          const documents = message.role === "user" ? uploadFileRefs.splice(0) : [];
+          // A video and a document are never sent to the model, so their refs
+          // have no base64 part to replace and have to be appended instead.
+          const appended = [...documents, ...(video ? [video] : [])];
+          const stored = withAppendedRefs(persistMessage(event.message, refs), appended);
           // The tree is written first and the transcript row records which entry
           // it came from, which is what lets a rewind translate a client
           // sequence number back into a point in the tree.
@@ -570,7 +659,7 @@ export class Runtime {
   steer(conversationId: string, text: string) {
     const entry = this.active.get(conversationId);
     if (!entry?.agent) return false;
-    entry.agent.steer({ role: "user", content: text, timestamp: Date.now() } as AgentMessage);
+    entry.agent.steer(text);
     return true;
   }
 }

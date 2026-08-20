@@ -23,6 +23,7 @@ import {
   type GenerationContext,
   type GenerationRequest,
   type GenerationResult,
+  type SourceImage,
 } from "./types.ts";
 
 const SUBMIT_TIMEOUT_MS = 60_000;
@@ -67,6 +68,8 @@ interface VideoParams {
   sourceField?: string;
   /** References this model accepts; above one the schema offers the extra slots. */
   maxSources?: number;
+  /** This backend's own prompting advice, shown on the prompt field. */
+  promptHints?: string;
 }
 
 const states = (configured: string[] | undefined, fallback: Set<string>) =>
@@ -74,6 +77,8 @@ const states = (configured: string[] | undefined, fallback: Set<string>) =>
 
 const params = (spec: ModelSpec) => (spec.params ?? {}) as VideoParams;
 const maxSourcesOf = (spec: ModelSpec) => Math.max(1, params(spec).maxSources ?? 1);
+
+const dataUri = (image: SourceImage) => `data:${image.mime};base64,${image.bytes.toString("base64")}`;
 const route = (template: string, id: string) => template.replaceAll("{id}", encodeURIComponent(id));
 
 const pick = (value: unknown, ...keys: string[]): unknown => {
@@ -282,19 +287,41 @@ export const videoAdapter: GenerationAdapter = {
 
   schema(spec, op) {
     const properties: Record<string, JsonSchema> = {
-      prompt: promptField("镜头描述"),
+      prompt: promptField("镜头描述", 10_000, params(spec).promptHints),
     };
     const sizes = params(spec).sizes;
-    if (sizes?.length) properties.size = { type: "string", title: "分辨率", enum: sizes, default: sizes[0] };
+    if (sizes?.length) {
+      properties.size = {
+        type: "string",
+        title: "分辨率",
+        enum: sizes,
+        default: sizes[0],
+        // The aspect is the part that has to be chosen deliberately: a landscape
+        // frame given a vertical subject crops the subject, and nothing later in
+        // the pipeline can put it back.
+        description:
+          "WIDTHxHEIGHT. Pick the orientation the subject needs — a standing figure or a phone-shaped scene wants a portrait frame, a landscape or two people side by side wants a wide one. Animating an image: pick the entry whose orientation matches that image, or the render letterboxes it.",
+      };
+    }
     const durations = params(spec).durations;
     if (durations?.length) {
-      properties.duration = { type: "integer", title: "时长（秒）", enum: durations, default: durations[0] };
+      properties.duration = {
+        type: "integer",
+        title: "时长（秒）",
+        enum: durations,
+        default: durations[0],
+        // Cost and failure both scale with length, and a long clip asked to hold
+        // one beat fills the extra seconds by inventing action.
+        description:
+          "Seconds. Use the shortest value that contains the action asked for; one beat or one camera move is the smallest entry. Ask for a longer clip only when the user named a duration or the action genuinely needs the time.",
+      };
     }
     if (op === "image_to_video") {
       properties.source_image_id = {
         type: "string",
         title: "参考图 / 首帧",
-        description: "Copy an exact image_id from the conversation.",
+        description:
+          "Copy an exact image_id from the conversation. This image is the clip's first frame, so its subject, framing and light are what the motion starts from — describe the movement in the prompt, not the picture.",
       };
       const extras = maxSourcesOf(spec) - 1;
       if (extras > 0) {
@@ -358,9 +385,11 @@ export const videoAdapter: GenerationAdapter = {
             bodyOf: () =>
               JSON.stringify({
                 ...fields,
-                ...(sources[0]
-                  ? { [sourceField]: `data:${sources[0].mime};base64,${sources[0].bytes.toString("base64")}` }
-                  : {}),
+                ...(sources.length === 1
+                  ? { [sourceField]: dataUri(sources[0]!) }
+                  : sources.length > 1
+                    ? { [sourceField]: sources.map(dataUri) }
+                    : {}),
               }),
           };
 

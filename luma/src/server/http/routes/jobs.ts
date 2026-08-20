@@ -4,7 +4,7 @@
  * A job's whole state is its row, so `GET /jobs/:id` answers a reconnect
  * completely and the stream is only a way to be told sooner. That is why there is
  * no `Last-Event-ID` here and no event log behind it: unlike a run, a job has no
- * incremental content that a client could miss (`08-generation.md §Jobs`).
+ * incremental content that a client could miss (`03-generation.md §Jobs`).
  */
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";

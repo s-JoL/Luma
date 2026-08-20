@@ -2,8 +2,8 @@ import path from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import type { JsonSchema, McpStatus, StudioTool } from "@shared/types.ts";
-import { SECRET, type Config } from "../config.ts";
+import type { McpStatus } from "@shared/types.ts";
+import { SECRET } from "../config.ts";
 import type { SecretVault } from "../crypto/secrets.ts";
 import { paths } from "../env.ts";
 import type { Store } from "../store/store.ts";
@@ -20,25 +20,18 @@ function expand(value: string, vars: Record<string, string>) {
  * Owns the connected MCP servers — child processes and remote endpoints alike
  * (`transport.ts`). Reconnecting is a full teardown so a settings change can
  * never leave a half-configured server attached.
+ *
+ * MCP is for the agent. Generation goes through adapters and the job queue;
+ * connecting a server "for the studio only" was a second image path and is gone.
  */
-/** Tool names decide how the studio groups and renders a tool. */
-function classify(name: string): StudioTool["kind"] {
-  if (/video/i.test(name)) return "video";
-  if (/edit|inpaint|upscale|variation/i.test(name)) return "edit";
-  if (/generate|create|txt2img|image/i.test(name)) return "generate";
-  return "other";
-}
-
 export class McpPool {
   private clients: Array<{ id: string; client: Client }> = [];
   private statuses: McpStatus[] = [];
   private tools: AgentTool[] = [];
-  private descriptors: StudioTool[] = [];
 
   constructor(
     private readonly store: Store,
     private readonly vault: SecretVault,
-    private readonly config: Config,
   ) {}
 
   status(): McpStatus[] {
@@ -47,21 +40,6 @@ export class McpPool {
 
   currentTools() {
     return this.tools;
-  }
-
-  /** Tool definitions with their raw JSON Schema, for schema-driven UIs. */
-  catalogue(): StudioTool[] {
-    return this.descriptors;
-  }
-
-  /** Calls a tool directly, bypassing the agent loop. */
-  async call(serverId: string, toolName: string, args: Record<string, unknown>, signal?: AbortSignal) {
-    const entry = this.clients.find((item) => item.id === serverId);
-    if (!entry) throw new Error(`MCP server ${serverId} is not connected`);
-    return entry.client.callTool({ name: toolName, arguments: args }, undefined, {
-      signal,
-      timeout: CALL_TIMEOUT_MS,
-    });
   }
 
   private variables(): Record<string, string> {
@@ -81,18 +59,10 @@ export class McpPool {
     await this.close();
     const vars = this.variables();
     const output: AgentTool[] = [];
-    const descriptors: StudioTool[] = [];
     this.statuses = [];
 
-    // A server picked for the studio is connected even when it is kept out of
-    // the chat, so an image model can be driven by hand without enlarging the
-    // agent's tool list.
-    const studio = this.config.capabilities().studio;
-    const studioServers = new Set(studio.enabled ? studio.servers : []);
-
     for (const server of this.store.listMcpServers()) {
-      const forStudio = studioServers.has(server.id);
-      if (!server.enabled && !forStudio) {
+      if (!server.enabled) {
         this.statuses.push({ id: server.id, title: server.title, enabled: false, connected: false, tools: [] });
         continue;
       }
@@ -105,22 +75,12 @@ export class McpPool {
         this.statuses.push({
           id: server.id,
           title: server.title,
-          enabled: server.enabled,
+          enabled: true,
           connected: true,
-          studioOnly: !server.enabled,
           tools: listed.tools.map((tool) => tool.name),
         });
         for (const tool of listed.tools) {
           const toolName = `${tool.name}_mcp_${server.id.replaceAll(":", "__")}`;
-          descriptors.push({
-            serverId: server.id,
-            serverTitle: server.title,
-            name: tool.name,
-            description: tool.description ?? "",
-            kind: classify(tool.name),
-            schema: tool.inputSchema as JsonSchema,
-          });
-          if (!server.enabled) continue;
           output.push({
             name: toolName,
             label: toolName,
@@ -161,9 +121,8 @@ export class McpPool {
         this.statuses.push({
           id: server.id,
           title: server.title,
-          enabled: server.enabled,
+          enabled: true,
           connected: false,
-          studioOnly: !server.enabled,
           tools: [],
           error: message,
         });
@@ -172,7 +131,6 @@ export class McpPool {
       }
     }
     this.tools = output;
-    this.descriptors = descriptors;
     return output;
   }
 
@@ -193,6 +151,5 @@ export class McpPool {
     await Promise.allSettled(this.clients.map(({ client }) => client.close()));
     this.clients = [];
     this.tools = [];
-    this.descriptors = [];
   }
 }

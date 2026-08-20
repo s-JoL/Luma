@@ -243,21 +243,15 @@ export class Store {
     const providers = new Map(this.listProviders().map((provider) => [provider.id, provider]));
     return this.db.all("SELECT * FROM models ORDER BY sort_order, name").map((row) => {
       const spec = toModelSpec(row);
-      const provider = providers.get(spec.providerId);
-      // A provider that declares no authentication has no key to be missing, so
-      // its models are usable as soon as the row exists. Without this a keyless
-      // local endpoint reports every chat model unconfigured and the switcher
-      // filters them all out.
-      spec.configured =
-        !needsApiKey(spec.apiMode) ||
-        (provider ? provider.hasKey || providerAuth(provider).style === "none" : false);
-      return spec;
+      return withConfigured(spec, providers.get(spec.providerId));
     });
   }
 
   getModel(id: string): ModelSpec | undefined {
     const row = this.db.get("SELECT * FROM models WHERE id = ?", id);
-    return row ? toModelSpec(row) : undefined;
+    if (!row) return undefined;
+    const spec = toModelSpec(row);
+    return withConfigured(spec, this.getProvider(spec.providerId));
   }
 
   upsertModel(input: ModelInput) {
@@ -1199,14 +1193,14 @@ export class Store {
   }
 
   /**
-   * How much of the library is embedded, over the rows that can be. Nothing
-   * visual is counted: a clip is never chunked, so counting it would leave the
-   * index permanently one short of ready and make a finished job look unfinished.
+   * How much of the library can be searched, over the rows that can be. Visual
+   * files are not counted. `indexed` (chunks, no vectors) and `ready` (vectors
+   * too) both count, because keyword search does not need embeddings.
    */
   fileIndexSummary() {
     const row = this.db.get<{ total: number; ready: number }>(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN embedding_status = 'ready' THEN 1 ELSE 0 END) AS ready
+              SUM(CASE WHEN embedding_status IN ('ready', 'indexed') THEN 1 ELSE 0 END) AS ready
        FROM files f WHERE NOT ${VISUAL}`,
     );
     return { total: Number(row?.total ?? 0), ready: Number(row?.ready ?? 0) };
@@ -1264,6 +1258,17 @@ export class Store {
       .filter(Boolean);
   }
 
+  /** Overlapping CJK n-grams, so a question without spaces still has LIKE needles. */
+  private static cjkGrams(query: string, n: number): string[] {
+    const chars = [...query].filter((char) => /\p{Script=Han}/u.test(char));
+    if (chars.length < n) return chars.length ? [chars.join("")] : [];
+    const grams: string[] = [];
+    for (let index = 0; index <= chars.length - n; index += 1) {
+      grams.push(chars.slice(index, index + n).join(""));
+    }
+    return grams;
+  }
+
   /**
    * Full-text candidates.
    *
@@ -1282,7 +1287,23 @@ export class Store {
    * things cannot be compared, but their ranks can.
    */
   keywordChunks(query: string, limit: number): Array<ChunkRow & { score: number }> {
-    const terms = Store.terms(query);
+    const first = this.fuseKeyword(Store.terms(query), limit);
+    if (first.length) return first;
+    // A Chinese question is one token to Unicode (no spaces, 什么 is not
+    // punctuation), so the literal "内部代号是什么" matches neither a trigram
+    // phrase nor a LIKE substring of "内部代号是 ORANGE-…". Strip the
+    // interrogative tail and, if that still misses, search overlapping CJK
+    // bigrams so a natural question still reaches the passage.
+    const stripped = query.replace(/(是什么|是谁|是哪[儿里]?|多少|怎么[样办]?|[吗呢])+$/u, "").trim();
+    if (stripped && stripped !== query.trim()) {
+      const retry = this.fuseKeyword(Store.terms(stripped), limit);
+      if (retry.length) return retry;
+    }
+    const grams = Store.cjkGrams(query, 2);
+    return grams.length ? this.fuseKeyword(grams, limit) : [];
+  }
+
+  private fuseKeyword(terms: string[], limit: number): Array<ChunkRow & { score: number }> {
     if (!terms.length) return [];
     const indexed = this.ftsChunks(terms.filter((term) => [...term].length >= 3), limit);
     const scanned = this.likeChunks(terms, limit);
@@ -1702,6 +1723,17 @@ export class Store {
   listSecretNames() {
     return this.db.all<{ name: string }>("SELECT name FROM secrets").map((row) => row.name);
   }
+}
+
+function withConfigured(spec: ModelSpec, provider: Provider | undefined): ModelSpec {
+  // A provider that declares no authentication has no key to be missing, so
+  // its models are usable as soon as the row exists. Without this a keyless
+  // local endpoint reports every chat model unconfigured and the switcher
+  // filters them all out.
+  spec.configured =
+    !needsApiKey(spec.apiMode) ||
+    (provider ? provider.hasKey || providerAuth(provider).style === "none" : false);
+  return spec;
 }
 
 function toModelSpec(row: Record<string, unknown>): ModelSpec {

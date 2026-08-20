@@ -13,14 +13,14 @@ export type ApiMode =
   | "openai-chat"
   | "openai-responses"
   | "anthropic-messages"
+  | "google-generative"
   | "openai-images"
-  | "venice-image"
   | "comfy-workflow"
   | "openai-videos";
 
 /**
  * What a model is for. `chat` models go through pi-ai; the generation kinds go
- * through a generation adapter named by `apiMode` (`08-generation.md`).
+ * through a generation adapter named by `apiMode` (`03-generation.md`).
  */
 export type ModelKind = "chat" | "image" | "video" | "embedding" | "rerank";
 
@@ -28,13 +28,13 @@ export type ModelKind = "chat" | "image" | "video" | "embedding" | "rerank";
 export type GenerationOp = "text_to_image" | "image_to_image" | "text_to_video" | "image_to_video";
 
 export const API_MODES: Array<{ id: ApiMode; label: string; path: string; kinds: ModelKind[] }> = [
-  { id: "openai-chat", label: "OpenAI Chat Completions", path: "/chat/completions", kinds: ["chat"] },
-  { id: "openai-responses", label: "OpenAI Responses", path: "/responses", kinds: ["chat"] },
-  { id: "anthropic-messages", label: "Anthropic Messages", path: "/messages", kinds: ["chat"] },
-  { id: "openai-images", label: "OpenAI 图像（生成 / 编辑）", path: "/images/generations", kinds: ["image"] },
-  { id: "venice-image", label: "Venice 图像（生成 / 编辑 / 多图）", path: "/image/generate", kinds: ["image"] },
-  { id: "comfy-workflow", label: "本地 ComfyUI 工作流", path: "/prompt", kinds: ["image", "video"] },
-  { id: "openai-videos", label: "OpenAI 兼容视频（异步）", path: "/videos", kinds: ["video"] },
+  { id: "openai-chat", label: "对话（Chat Completions）", path: "/chat/completions", kinds: ["chat"] },
+  { id: "openai-responses", label: "对话（Responses）", path: "/responses", kinds: ["chat"] },
+  { id: "anthropic-messages", label: "对话（Anthropic）", path: "/messages", kinds: ["chat"] },
+  { id: "google-generative", label: "对话（Gemini 原生）", path: "/v1beta/models", kinds: ["chat"] },
+  { id: "openai-images", label: "图像", path: "/images/generations", kinds: ["image"] },
+  { id: "comfy-workflow", label: "ComfyUI", path: "/prompt", kinds: ["image", "video"] },
+  { id: "openai-videos", label: "视频", path: "/videos", kinds: ["video"] },
 ];
 
 /**
@@ -69,7 +69,8 @@ export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancell
 
 export type FileSearchMode = "keyword" | "semantic" | "hybrid";
 
-export type EmbeddingStatus = "none" | "pending" | "ready" | "failed";
+/** `indexed` means chunks exist and keyword search works, without vectors. */
+export type EmbeddingStatus = "none" | "pending" | "indexed" | "ready" | "failed";
 
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
@@ -190,6 +191,9 @@ export interface DiscoveredModel {
     apiMode: ApiMode;
     reasoning: boolean;
     input: Array<"text" | "image">;
+    /** From the listing when the provider sends one; otherwise a family guess. */
+    contextWindow: number;
+    maxTokens: number;
   };
 }
 
@@ -224,8 +228,15 @@ export interface WebCapability {
    * the union here would make adding it a change to the shared contract.
    */
   provider: string;
+  /** Instance root for self-hosted backends such as SearXNG. Empty for Tavily. */
+  baseUrl: string;
   hasTavilyKey: boolean;
 }
+
+export const SEARCH_PROVIDERS = [
+  { id: "tavily", label: "Tavily", requiresKey: true },
+  { id: "searxng", label: "SearXNG（自托管）", requiresKey: false },
+] as const;
 
 export interface CodingCapability {
   read: boolean;
@@ -246,8 +257,6 @@ export interface EmbeddingCapability {
 
 export interface StudioCapability {
   enabled: boolean;
-  /** MCP servers surfaced in the studio. Empty means every connected server. */
-  servers: string[];
 }
 
 export interface Capabilities {
@@ -260,24 +269,29 @@ export interface Capabilities {
 }
 
 /**
- * One thing the studio can run: a generation model's operation, or a third-party
- * MCP tool. Generation entries carry `modelId` and `op`; MCP entries do not.
+ * One operation a generation model offers in the studio. The form is the
+ * adapter's schema; `modelId` and `op` are what `POST /jobs` wants.
  */
 export interface StudioTool {
   serverId: string;
   serverTitle: string;
   name: string;
   description: string;
-  kind: "generate" | "edit" | "video" | "other";
+  kind: "generate" | "edit" | "video";
   schema: JsonSchema;
-  modelId?: string;
-  op?: GenerationOp;
+  modelId: string;
+  op: GenerationOp;
   /**
    * Whether this runs on our own GPU. Worth knowing before committing to a wait:
-   * a local render is slow and free, a hosted one is quick and billed. Absent for
-   * an MCP tool, whose backend this server cannot see.
+   * a local render is slow and free, a hosted one is quick and billed.
    */
   local?: boolean;
+  /**
+   * Whether the provider key (or local workflow) is in place. The studio still
+   * lists a row that isn't, so it can be configured; it just should not be the
+   * default pick when a keyed hosted backend is sitting next to it.
+   */
+  configured?: boolean;
 }
 
 export interface JsonSchema {
@@ -327,8 +341,6 @@ export interface McpStatus {
   /** Whether the chat agent gets this server's tools. */
   enabled: boolean;
   connected: boolean;
-  /** Connected for the studio only, and hidden from the agent. */
-  studioOnly?: boolean;
   tools: string[];
   error?: string;
 }
@@ -533,7 +545,7 @@ export interface GeneratedAsset {
 /**
  * One generation request. A job's whole state is this row, which is why there is
  * no job event log: a reconnecting client reads it and knows everything
- * (`08-generation.md §Jobs`).
+ * (`03-generation.md §Jobs`).
  */
 export interface JobRecord {
   id: string;

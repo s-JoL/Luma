@@ -138,9 +138,22 @@ function archive(workspace: string, file: string, reason: string) {
  * Filesystem and shell access for the coding agent. Every tool is off by
  * default and every path is confined to the configured workspace.
  */
+function resolveWorkspace(requested: string) {
+  const workspace = path.resolve(requested);
+  try {
+    // macOS presents /var as a symlink to /private/var. safePath already
+    // realpath's every target, so the workspace root used for confinement and
+    // the "do not delete ." check has to be the same path, or deleting `.`
+    // looks like a subdirectory and wipes the project.
+    return fs.realpathSync(workspace);
+  } catch {
+    return workspace;
+  }
+}
+
 export function codingTools(config: CodingCapability): AgentTool[] {
   const tools: AgentTool[] = [];
-  const workspace = path.resolve(config.workspace);
+  const workspace = resolveWorkspace(config.workspace);
   const show = (file: string) => path.relative(workspace, file) || ".";
 
   if (config.read) {

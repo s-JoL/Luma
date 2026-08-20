@@ -1,6 +1,6 @@
 /**
  * Profiles: the named bundle a conversation runs under — models, capabilities,
- * MCP servers, prompts (`08-generation.md §Profiles`).
+ * MCP servers, prompts (`03-generation.md §Profiles`).
  *
  * Deleting the last profile is allowed. A deployment with none behaves exactly
  * as it did before profiles existed, which is what makes the whole feature inert
@@ -8,12 +8,10 @@
  */
 import { Hono } from "hono";
 import type { Profile, ProfileInput } from "@shared/types.ts";
+import { slug } from "../../ids.ts";
 import type { Services } from "../../services.ts";
 import { readJson } from "../body.ts";
 import { fail } from "../errors.ts";
-
-const slug = (value: string) =>
-  value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `profile-${Date.now()}`;
 
 export function profileRoutes(services: Services) {
   const app = new Hono();
@@ -26,7 +24,7 @@ export function profileRoutes(services: Services) {
   app.post("/profiles", async (context) => {
     const body = await readJson<ProfileInput>(context);
     if (!body.name?.trim()) return fail(context, 400, "invalid", "name is required");
-    const id = body.id ? slug(body.id) : slug(body.name);
+    const id = slug(body.id || body.name, "profile");
     if (store.getProfile(id)) return fail(context, 409, "conflict", `Profile ${id} already exists`);
     const profile = store.upsertProfile({ ...body, id, name: body.name.trim() });
     return context.json(profile, 201);

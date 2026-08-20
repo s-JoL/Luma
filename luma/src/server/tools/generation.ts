@@ -10,7 +10,7 @@
  *
  * And because a tool only exists when a model that can perform the operation is
  * configured, the tool list stays honest: no `edit_image` in front of a backend
- * that cannot edit (`08-generation.md §What the model calls`).
+ * that cannot edit (`03-generation.md §What the model calls`).
  *
  * These tools are the only image path. The MCP sidecar that used to carry local
  * ComfyUI is gone, because two ways to draw meant the model chose between them at
@@ -51,9 +51,9 @@ const uploadsNote = (uploads: GenerationToolOptions["uploads"]) =>
     : "";
 
 /**
- * What the model gets back. The structured half is the same shape the image MCP
- * returned, so the transcript, the gallery and image hydration keep working
- * through the code that already existed.
+ * What the model gets back. `image_id` / `video_id` stay because the transcript
+ * and `view_image` already speak that name; `asset` is the same `GeneratedAsset`
+ * the gallery and the job row use, so nothing has to convert.
  */
 async function resultFor(job: JobRecord, store: Store) {
   const asset = job.assets[0];
@@ -70,6 +70,7 @@ async function resultFor(job: JobRecord, store: Store) {
       poster_image_id: asset.posterAssetId ?? null,
       provider,
       model: job.modelName,
+      asset,
     };
     return {
       content: [
@@ -90,6 +91,7 @@ async function resultFor(job: JobRecord, store: Store) {
     provider,
     model: job.modelName,
     parent_image_ids: job.sources,
+    asset,
   };
   // The model sees the picture it just made, which is what lets it judge whether
   // the next step is another edit or an answer.

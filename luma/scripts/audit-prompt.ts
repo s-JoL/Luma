@@ -1,6 +1,6 @@
 /**
  * Asserts the system prompt's section order and its stability across turns —
- * the two properties provider prompt caching depends on (`05-agent.md §Prompt
+ * the two properties provider prompt caching depends on (`02-agent.md §Prompt
  * assembly`). Nothing here talks to a provider or a database.
  *
  *   node --import tsx scripts/audit-prompt.ts
@@ -96,6 +96,49 @@ check("a disabled capability contributes nothing rather than an empty heading", 
   assert(bare === STATIC, `a prompt with no capabilities is not just the pair:\n${bare}`);
   assert(!bare.includes("\n\n\n"), "a skipped section left a blank gap behind");
   return "prompt pair only, no stray separators";
+});
+
+check("a remembered entry reaches the prompt as both its key and its value", () => {
+  // This is where memory injection is provable. The live suite used to ask a
+  // model to recall something and assert on its answer, which passed on a
+  // hallucinated preference that happened to contain the expected word and
+  // failed on a correct one — a model that invents plausible memories cannot
+  // witness whether ours arrived. The prompt can.
+  const prompt = buildModelSystemPrompt({
+    staticPrompt: STATIC,
+    memories: [
+      { key: "writing_preferences", value: "Short sentences.", updatedAt: "2026-08-01T00:00:00.000Z" },
+      { key: "cat", value: "The user's cat is named VIOLET-BADGER-9.", updatedAt: "2026-08-02T00:00:00.000Z" },
+    ],
+    searchableFiles: [],
+    filesEnabled: false,
+    memoryEnabled: true,
+    memoryTokenLimit: 16_000,
+    webEnabled: false,
+    now: "2026-08-18T12:34:56.789Z",
+  });
+  assert(prompt.includes("VIOLET-BADGER-9"), "an entry's value never reached the prompt");
+  assert(prompt.includes("cat"), "an entry's key never reached the prompt");
+  assert(prompt.includes("Short sentences."), "only the last entry reached the prompt");
+
+  // The budget trims oldest-first rather than dropping the section, because a
+  // prompt that silently loses memory looks exactly like one that never had any.
+  const tight = buildModelSystemPrompt({
+    staticPrompt: STATIC,
+    memories: [
+      { key: "old", value: `Stale. ${"padding ".repeat(400)}`, updatedAt: "2026-01-01T00:00:00.000Z" },
+      { key: "new", value: "The user's cat is named VIOLET-BADGER-9.", updatedAt: "2026-08-02T00:00:00.000Z" },
+    ],
+    searchableFiles: [],
+    filesEnabled: false,
+    memoryEnabled: true,
+    memoryTokenLimit: 200,
+    webEnabled: false,
+    now: "2026-08-18T12:34:56.789Z",
+  });
+  assert(tight.includes(MEMORY_INSTRUCTIONS), "the budget removed the memory section itself");
+  assert(tight.includes("VIOLET-BADGER-9"), "the budget kept the stale entry over the recent one");
+  return "key and value both present, budget trims the oldest";
 });
 
 check("a model's own prompt replaces the pair instead of joining it", () => {
