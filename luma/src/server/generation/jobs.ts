@@ -21,7 +21,6 @@ import {
   supportsOp,
 } from "./index.ts";
 import { GenerationError, type ProducedAsset } from "./types.ts";
-import { awaitVideo } from "./video.ts";
 
 /** A local backend renders one at a time; a hosted one is limited by politeness. */
 const CONCURRENCY: Record<string, number> = { "comfy-workflow": 1, default: 3 };
@@ -184,8 +183,8 @@ export class Jobs {
 
       const existing = jobProviderId(this.store, id);
       const result =
-        existing && job.kind === "video"
-          ? await awaitVideo(request, context, existing)
+        existing && job.kind === "video" && adapter.resume
+          ? await adapter.resume(request, context, existing)
           : await adapter.run(request, context);
       this.settleSucceeded(id, result.assets);
     } catch (error) {

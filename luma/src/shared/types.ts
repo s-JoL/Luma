@@ -16,7 +16,8 @@ export type ApiMode =
   | "google-generative"
   | "openai-images"
   | "comfy-workflow"
-  | "openai-videos";
+  | "openai-videos"
+  | "venice-videos";
 
 /**
  * What a model is for. `chat` models go through pi-ai; the generation kinds go
@@ -35,6 +36,7 @@ export const API_MODES: Array<{ id: ApiMode; label: string; path: string; kinds:
   { id: "openai-images", label: "图像", path: "/images/generations", kinds: ["image"] },
   { id: "comfy-workflow", label: "ComfyUI", path: "/prompt", kinds: ["image", "video"] },
   { id: "openai-videos", label: "视频", path: "/videos", kinds: ["video"] },
+  { id: "venice-videos", label: "视频（Venice Queue）", path: "/video/queue", kinds: ["video"] },
 ];
 
 /**

@@ -204,7 +204,7 @@ async function fetchVideo(url: string, signal: AbortSignal) {
  * Waits for a submitted render. Exported so job recovery after a restart can
  * rejoin a render it did not submit.
  */
-export async function awaitVideo(
+async function awaitVideo(
   request: GenerationRequest,
   ctx: GenerationContext,
   providerJobId: string,
@@ -406,4 +406,6 @@ export const videoAdapter: GenerationAdapter = {
     ctx.progress(null, "已提交");
     return awaitVideo(request, ctx, providerJobId);
   },
+
+  resume: awaitVideo,
 };

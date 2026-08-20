@@ -163,6 +163,13 @@ const hostedState: HostedState = {
   dropNext: new Set(),
 };
 
+const veniceState = {
+  queueBody: {} as Record<string, unknown>,
+  retrieveBody: {} as Record<string, unknown>,
+  retrieves: 0,
+  completed: 0,
+};
+
 const hostedServer = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://hosted");
   const send = (status: number, payload: unknown, mime = "application/json") => {
@@ -195,6 +202,22 @@ const hostedServer = http.createServer(async (request, response) => {
     hostedState.videoSubmits += 1;
     hostedState.videoLastBody = await body(request);
     return send(200, { id: "vid-remote-1", status: "queued" });
+  }
+  if (request.method === "POST" && url.pathname === "/video/queue") {
+    veniceState.queueBody = JSON.parse(await body(request));
+    return send(200, { queue_id: "venice-remote-1" });
+  }
+  if (request.method === "POST" && url.pathname === "/video/retrieve") {
+    veniceState.retrieveBody = JSON.parse(await body(request));
+    veniceState.retrieves += 1;
+    return veniceState.retrieves === 1
+      ? send(200, { status: "PROCESSING", average_execution_time: 100, execution_duration: 50 })
+      : send(200, MP4, "video/mp4");
+  }
+  if (request.method === "POST" && url.pathname === "/video/complete") {
+    veniceState.completed += 1;
+    await body(request);
+    return send(200, { success: true });
   }
   if (request.method === "POST" && url.pathname.endsWith("/cancel")) {
     hostedState.cancelledVideos.push(url.pathname.split("/")[2] ?? "");
@@ -229,7 +252,9 @@ const store = new Store(db);
 const vault = new SecretVault(store, crypto.randomBytes(32));
 store.upsertProvider({ id: "comfy", name: "Local ComfyUI", baseUrl: comfyUrl });
 store.upsertProvider({ id: "hosted", name: "Hosted", baseUrl: hostedUrl });
+store.upsertProvider({ id: "venice", name: "Venice", baseUrl: hostedUrl });
 vault.set(SECRET.provider("hosted"), "test-key");
+vault.set(SECRET.provider("venice"), "test-key");
 
 fs.writeFileSync(
   path.join(paths.workflows, "audit.json"),
@@ -280,6 +305,12 @@ store.upsertModel({
   id: "hosted-video", name: "Seedance", model: "seedance-2.5-pro", providerId: "hosted",
   kind: "video", ops: ["text_to_video", "image_to_video"], apiMode: "openai-videos",
   params: { durations: [5, 10] },
+});
+store.upsertModel({
+  ...chatModel,
+  id: "venice-video", name: "Seedance 2.5 R2V", model: "seedance-2-5-reference-to-video-basic", providerId: "venice",
+  kind: "video", ops: ["image_to_video"], apiMode: "venice-videos",
+  params: { durations: [5, 10], resolutions: ["720p"], aspectRatios: ["16:9", "9:16"], imageAspectRatios: ["16:9", "9:16"], sourceField: "reference_image_urls", pollIntervalMs: 10 },
 });
 
 const jobs = new Jobs(store, vault);
@@ -379,6 +410,25 @@ await check("a video arrives as a video asset with its own kind", async () => {
   assert(store.getFile(asset.assetId), "the video is invisible to the library");
   assert(hostedState.videoPolls >= 2, `settled after ${hostedState.videoPolls} polls`);
   return `${asset.assetId} after ${hostedState.videoPolls} polls`;
+});
+
+await check("Venice queues JSON, polls with its model pair and saves the returned MP4", async () => {
+  const job = await jobs.run({
+    modelId: "venice-video",
+    op: "image_to_video",
+    params: { prompt: "the wave rolls in", duration: 5, resolution: "720p", aspect_ratio: "16:9", source_image_id: seedImage },
+  });
+  assert(job.status === "succeeded", `Venice job ${job.status}: ${job.error}`);
+  assert(veniceState.queueBody.model === "seedance-2-5-reference-to-video-basic", `queued model ${veniceState.queueBody.model}`);
+  assert(veniceState.queueBody.duration === "5s", `duration ${veniceState.queueBody.duration}`);
+  const references = veniceState.queueBody.reference_image_urls as unknown[];
+  assert(Array.isArray(references) && String(references[0]).startsWith("data:image/png;base64,"), "reference was not a data-URI array");
+  assert(veniceState.queueBody.aspect_ratio === "16:9", `R2V aspect ratio ${veniceState.queueBody.aspect_ratio}`);
+  assert(veniceState.retrieveBody.model === "seedance-2-5-reference-to-video-basic", `retrieve model ${veniceState.retrieveBody.model}`);
+  assert(veniceState.retrieveBody.queue_id === "venice-remote-1", `queue id ${veniceState.retrieveBody.queue_id}`);
+  assert(veniceState.completed === 1, `cleanup count ${veniceState.completed}`);
+  assert(job.assets[0]?.kind === "video", "Venice result was not a video asset");
+  return `${veniceState.retrieves} retrieves, one cleanup`;
 });
 
 await check("a render the backend owns survives a restart, one it does not is failed", async () => {

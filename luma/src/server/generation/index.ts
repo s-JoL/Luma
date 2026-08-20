@@ -18,9 +18,10 @@ import { comfyAdapter } from "./comfy.ts";
 import { openAiImagesAdapter } from "./openai-images.ts";
 import { GenerationError, type GenerationAdapter, type SourceImage } from "./types.ts";
 import { videoAdapter } from "./video.ts";
+import { veniceVideoAdapter } from "./venice-video.ts";
 
 const ADAPTERS = new Map<string, GenerationAdapter>(
-  [openAiImagesAdapter, comfyAdapter, videoAdapter].map((adapter) => [adapter.id, adapter]),
+  [openAiImagesAdapter, comfyAdapter, videoAdapter, veniceVideoAdapter].map((adapter) => [adapter.id, adapter]),
 );
 
 export const generationAdapter = (spec: ModelSpec) => ADAPTERS.get(spec.apiMode);

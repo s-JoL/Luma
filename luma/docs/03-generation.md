@@ -24,7 +24,8 @@ image_to_video  提示词 + 1 图     → 视频
 |---|---|
 | `openai-images` | OpenAI 形 `/images/generations` 与 `/images/edits`（含 Ark/Seedream 的 unified JSON） |
 | `comfy-workflow` | 本机 ComfyUI。model = `data/workflows` 里一份图 + 行上的 bind/sizes/controls |
-| `openai-videos` | 异步提交 → 轮询 → 下载。路径和完成态写在行的 `params` 里 |
+| `openai-videos` | OpenAI 形异步提交 → 轮询 → 下载。路径和完成态写在行的 `params` 里 |
+| `venice-videos` | Venice `/video/queue` → `/video/retrieve`；完成时直接返回 MP4 或预签名下载地址 |
 
 托管图像只留 OpenAI 这一形。曾经有过一个 Venice adapter，为一家供应商多养一套
 协议不值得——同一个模型换个网关就是 OpenAI 形的行。种子里退役的 `api_mode`

@@ -10,7 +10,7 @@ import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../prompts/defaults.
 import { json } from "./db.ts";
 import type { Store } from "./store.ts";
 
-const SEED_VERSION = "12";
+const SEED_VERSION = "15";
 
 /**
  * Providers dropped from the defaults; removed on upgrade unless customised.
@@ -18,17 +18,21 @@ const SEED_VERSION = "12";
  * was not OpenAI-shaped, and carrying a second protocol for one provider cost
  * more than pointing an OpenAI-shaped row at whichever gateway serves the model.
  */
-const RETIRED_PROVIDERS = ["kie", "venice"];
+const RETIRED_PROVIDERS = ["kie"];
 
 const PROVIDERS: Array<ProviderInput & { id: string }> = [
   { id: "cometapi", name: "CometAPI", baseUrl: "https://api.cometapi.com/v1" },
   { id: "comfy", name: "ComfyUI 本地", baseUrl: "http://127.0.0.1:8188" },
+  { id: "venice", name: "Venice AI", baseUrl: "https://api.venice.ai/api/v1" },
 ];
 
 const CHAT_ID = "cometapi:grok-4.6";
 const IMAGE_ID = "comfy:lustify-v10";
 const EDIT_ID = "cometapi:seedream-5-pro";
-const VIDEO_ID = "cometapi:seedance-2-5";
+const COMET_VIDEO_ID = "cometapi:seedance-2-5";
+const WAN_VIDEO_ID = "venice:wan-2-7";
+const PREVIOUS_VIDEO_ID = "venice:seedance-2-5";
+const VIDEO_ID = "venice:seedance-2-5-r2v";
 
 /** Nothing that draws holds a conversation, so the chat-side fields are inert. */
 const GENERATION_DEFAULTS = {
@@ -108,8 +112,9 @@ const MODELS: ModelInput[] = [
   },
   {
     ...GENERATION_DEFAULTS,
-    id: VIDEO_ID,
+    id: COMET_VIDEO_ID,
     name: "Seedance 2.5",
+    enabled: false,
     providerId: "cometapi",
     model: "seedance-2-5",
     kind: "video",
@@ -134,6 +139,26 @@ const MODELS: ModelInput[] = [
         "Describes motion, not a still: what moves, in which direction, how fast, and what the camera does (hold, pan, push in, orbit, handheld). One continuous shot — asking for a cut, a montage or a second scene gets a confused single take. Given a first frame, describe only the movement away from it; the frame already carries the subject and the light.",
     },
   },
+  {
+    ...GENERATION_DEFAULTS,
+    id: VIDEO_ID,
+    name: "Seedance 2.5 R2V · Venice",
+    providerId: "venice",
+    model: "seedance-2-5-reference-to-video-basic",
+    kind: "video",
+    ops: ["image_to_video"],
+    apiMode: "venice-videos",
+    params: {
+      durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+      resolutions: ["480p", "720p", "1080p"],
+      aspectRatios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+      imageAspectRatios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+      sourceField: "reference_image_urls",
+      promptMax: 15_000,
+      promptHints:
+        "Describe one continuous shot: subject motion, direction and speed, then camera motion. With a first frame, describe only what changes after that frame.",
+    },
+  },
 ];
 
 /**
@@ -151,7 +176,10 @@ const RETIRED_MCP = [
 ];
 
 /** Second names a provider's key has been seen under, beyond `${ID}_API_KEY`. */
-const ENV_ALIASES: Record<string, string[]> = { cometapi: ["COMETAPI_KEY"] };
+const ENV_ALIASES: Record<string, string[]> = {
+  cometapi: ["COMETAPI_KEY"],
+  venice: ["VENICE_KEY"],
+};
 
 /**
  * Names of environment variables adopted once, on first boot only. Derived from
@@ -171,7 +199,8 @@ const ENV_SECRETS: Array<[string, string[]]> = [
 
 export function seed(store: Store, config: Config, vault: SecretVault) {
   installWorkflows(store);
-  if (store.getMeta("seed_version") === SEED_VERSION) return false;
+  const previousVersion = store.getMeta("seed_version");
+  if (previousVersion === SEED_VERSION) return false;
   for (const id of RETIRED_PROVIDERS) {
     if (store.getProvider(id)) store.deleteProvider(id);
   }
@@ -221,6 +250,14 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
     const polished = polishShippedRow(store.getModel(model.id)!, model);
     if (polished) store.upsertModel(polished);
   }
+  // v13 replaces the shipped Comet video binding with Venice. Do this once for
+  // the untouched shipped row; a model the owner renamed is their configuration.
+  if (previousVersion === "12") {
+    const cometVideo = store.getModel(COMET_VIDEO_ID);
+    if (cometVideo?.name === "Seedance 2.5") store.upsertModel({ ...cometVideo, enabled: false });
+  }
+  if (previousVersion === "13") store.deleteModel(WAN_VIDEO_ID);
+  if (previousVersion === "14") store.deleteModel(PREVIOUS_VIDEO_ID);
   if (adopted.length) console.log(`[seed] adopted shipped parameters for ${adopted.join(", ")}`);
   applyShippedProfile(store, config);
   const prompts = config.prompts();

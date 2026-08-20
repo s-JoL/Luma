@@ -68,6 +68,8 @@ export interface GenerationAdapter {
   /** One schema, two audiences: the studio form and the model's tool. */
   schema(spec: ModelSpec, op: GenerationOp): JsonSchema;
   run(request: GenerationRequest, ctx: GenerationContext): Promise<GenerationResult>;
+  /** Rejoin an asynchronous render after Luma restarted without submitting it twice. */
+  resume?(request: GenerationRequest, ctx: GenerationContext, providerJobId: string): Promise<GenerationResult>;
   /**
    * Best effort cleanup for work the backend already owns. Only needed by
    * backends that queue, which is why it is optional.
