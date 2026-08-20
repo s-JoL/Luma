@@ -401,7 +401,9 @@ detectable and can be migrated incrementally instead of by a full re-embed.
 ## Image and video assets
 
 Every generated image gets a provenance row, which is what makes "continue editing
-this image" work across conversations and what the studio gallery lists.
+this image" work across conversations. What the studio's gallery lists is `files`,
+though — every asset is adopted into it — and these tables are the left join that
+says which model made a row and what from.
 
 ```sql
 CREATE TABLE image_assets (
@@ -440,6 +442,12 @@ CREATE TABLE video_assets (
   created_at
 );
 ```
+
+An uploaded clip gets a row here too, with `provider: "upload"` and the rest null.
+That is not bookkeeping for its own sake: a `vid_` id is what the video route
+answers to, and the row is what earns the id, so without it an upload was a clip
+the library held and nothing could play. The nulls are honest — measuring a
+duration needs a demuxer this server does not have.
 
 ## Jobs and profiles
 

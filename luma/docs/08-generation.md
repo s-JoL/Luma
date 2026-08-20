@@ -119,13 +119,19 @@ interface GeneratedAsset {
 }
 ```
 
-Everything past `kind` is named exactly as `GET /v1/studio/gallery` names it and
-read from the same `files` and asset rows, so a client renders a finished job
-with the tile renderer it already has for the gallery. A job's whole state is its
-row (§Jobs below), which means the row has to answer everything a client would
-otherwise fetch: without this a client that had only seen the job invented a
-filename and had no provenance until a reload. `assetId` stays alongside `id`
-because the tools and the transcript refer to an asset by that name.
+This is also, exactly, what `GET /v1/studio/gallery` returns — one shape, read
+from the same `files` and asset rows, so a client renders a finished job with the
+tile renderer it already has for the gallery and converts nothing. A job's whole
+state is its row (§Jobs below), which means the row has to answer everything a
+client would otherwise fetch: without this a client that had only seen the job
+invented a filename and had no provenance until a reload. `assetId` stays
+alongside `id` because the tools and the transcript refer to an asset by that
+name.
+
+The gallery once had a second, image-only shape of its own, and what that cost was
+not a conversion but a place: a clip was in the library the whole time and the only
+thing that ever showed it was the queue card that produced it, so a finished video
+disappeared on the next reload.
 
 ## Models grow a kind
 
@@ -353,6 +359,17 @@ run is not information.
 canvas whether anything was running or not; now the space belongs to the results
 and the badge says how many are in flight. It opens itself once on submit, so the
 work is visibly somewhere, and stays closed after that if closed.
+
+**A clip is a work, so it is in the grid.** The gallery lists both media, and it
+had to: video was filtered out of it, and since the queue is where a job goes to
+stop being shown, a finished clip was visible for as long as its card was and then
+nowhere. There is no thumbnail to serve for one — no ffmpeg here to cut a frame,
+and the poster a clip carries is only the still it was animated from, which a
+text-to-video never had — so the tile is the video element at `preload="metadata"`,
+which paints frame one and, because the route honours `Range`, pays for the head of
+the file. It is badged with its duration either way: a first frame with nothing on
+it is a photograph. The edit affordance is not offered on one, and neither is the
+source picker, because nothing here takes a clip as input.
 
 ## What the model calls
 

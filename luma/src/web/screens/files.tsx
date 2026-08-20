@@ -1,4 +1,4 @@
-import { Eye, FileText, Pencil, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { Eye, FileText, Pencil, Play, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileFacets, FileKind, FileRecord } from "@shared/types.ts";
 import { FILE_SOURCE_LABELS } from "@shared/types.ts";
@@ -23,11 +23,12 @@ import {
   Textarea,
   useAction,
   useToast,
+  VideoView,
 } from "../ui.tsx";
 
 const PAGE = 60;
 
-const KIND_LABEL: Record<FileKind, string> = { all: "全部", docs: "文档", images: "图片" };
+const KIND_LABEL: Record<FileKind, string> = { all: "全部", docs: "文档", images: "图片", videos: "视频" };
 
 const STATUS: Record<string, { text: string; tone: "success" | "warning" | "danger" | "outline" }> = {
   ready: { text: "已索引", tone: "success" },
@@ -36,7 +37,7 @@ const STATUS: Record<string, { text: string; tone: "success" | "warning" | "dang
   none: { text: "未索引", tone: "outline" },
 };
 
-const EMPTY_FACETS: FileFacets = { kinds: { all: 0, docs: 0, images: 0 }, sources: [] };
+const EMPTY_FACETS: FileFacets = { kinds: { all: 0, docs: 0, images: 0, videos: 0 }, sources: [] };
 
 const sourceLabel = (id: string) => FILE_SOURCE_LABELS[id] ?? id;
 
@@ -73,6 +74,8 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<{ id: string; name: string; text: string } | null>(null);
   const [zoom, setZoom] = useState("");
+  /** The clip being watched. Separate from `zoom`, which is a still in a lightbox. */
+  const [playing, setPlaying] = useState("");
 
   const filter = useMemo(() => ({ kind, source, q: needle.trim() }), [kind, source, needle]);
 
@@ -214,7 +217,7 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
             <div className="flex flex-col gap-2 border-b px-4 py-3">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="mr-1 text-xs text-muted-foreground">类型</span>
-                {(["all", "docs", "images"] as FileKind[]).map((option) => (
+                {(["all", "docs", "images", "videos"] as FileKind[]).map((option) => (
                   <Chip
                     key={option}
                     on={kind === option}
@@ -246,13 +249,19 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
             {files.length === 0 ? (
               <SectionBody>
                 <p className="text-sm text-muted-foreground">
-                  没有符合条件的文件。拖拽到此页面可以上传，生成的图片也会自动进入这里。
+                  没有符合条件的文件。拖拽到此页面可以上传，生成的图片和视频也会自动进入这里。
                 </p>
               </SectionBody>
             ) : (
               files.map((file) => {
                 const status = STATUS[file.embeddingStatus] ?? STATUS.none!;
                 const isImage = file.mime.startsWith("image/");
+                const isVideo = file.mime.startsWith("video/");
+                // What the row offers turns on this rather than on "is an image":
+                // a clip is looked at, not indexed, and it used to land in the
+                // document half of every one of these decisions — a filename with
+                // a page icon, an index button, and no way to play it.
+                const visual = isImage || isVideo;
                 return (
                   // The row's default first-child width is meant for a label,
                   // and it stretched the thumbnail into a strip.
@@ -265,6 +274,22 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
                         label={`查看 ${file.name}`}
                         onOpen={() => setZoom(`/v1/images/${file.id}`)}
                       />
+                    ) : isVideo ? (
+                      // No thumbnail exists for a clip, so this is the clip: the
+                      // first frame, which `preload="metadata"` and a route that
+                      // honours `Range` fetch the head of the file for.
+                      <button
+                        className="size-12 shrink-0 overflow-hidden rounded-md border"
+                        aria-label={`播放 ${file.name}`}
+                        onClick={() => setPlaying(file.id)}
+                      >
+                        <video
+                          className="size-full object-cover"
+                          src={`/v1/videos/${file.id}`}
+                          preload="metadata"
+                          muted
+                        />
+                      </button>
                     ) : (
                       <span className="grid size-9 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
                         <FileText className="size-4" />
@@ -279,15 +304,15 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
                         {file.embeddingError ? ` · ${file.embeddingError}` : ""}
                       </div>
                     </div>
-                    {isImage ? null : <Badge tone={status.tone}>{status.text}</Badge>}
-                    {isImage ? (
+                    {visual ? null : <Badge tone={status.tone}>{status.text}</Badge>}
+                    {visual ? (
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={`查看大图 ${file.name}`}
-                        onClick={() => setZoom(`/v1/images/${file.id}`)}
+                        aria-label={isVideo ? `播放 ${file.name}` : `查看大图 ${file.name}`}
+                        onClick={() => (isVideo ? setPlaying(file.id) : setZoom(`/v1/images/${file.id}`))}
                       >
-                        <Eye />
+                        {isVideo ? <Play /> : <Eye />}
                       </Button>
                     ) : null}
                     {isEditable(file) ? (
@@ -306,7 +331,7 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
                         <Pencil />
                       </Button>
                     ) : null}
-                    {isImage ? null : (
+                    {visual ? null : (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -366,6 +391,13 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
       ) : null}
 
       {zoom ? <Lightbox src={zoom} onClose={() => setZoom("")} /> : null}
+
+      {/* A dialog rather than the lightbox, which is built around an `<img>`, and
+          a clip needs its controls reachable rather than a backdrop that closes
+          on the first click near them. */}
+      <Modal open={Boolean(playing)} onOpenChange={(open) => !open && setPlaying("")} title="播放">
+        {playing ? <VideoView className="max-h-[70dvh]" videoId={playing} /> : null}
+      </Modal>
     </>
   );
 }

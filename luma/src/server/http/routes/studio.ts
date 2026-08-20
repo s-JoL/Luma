@@ -87,8 +87,8 @@ export function studioRoutes(services: Services) {
     const limit = Math.min(200, Math.max(1, Number(context.req.query("limit") ?? GALLERY_PAGE)));
     const offset = Math.max(0, Number(context.req.query("offset") ?? 0));
     return context.json({
-      items: store.listImages(limit, offset),
-      total: store.countImages(),
+      items: store.listGallery(limit, offset),
+      total: store.countGallery(),
       offset,
       limit,
     });
