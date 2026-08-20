@@ -28,7 +28,6 @@ import type {
   SessionRecord,
   StoredEvent,
   StoredMessage,
-  StudioImage,
   ThinkingLevel,
   VideoAsset,
 } from "@shared/types.ts";
@@ -81,8 +80,17 @@ export interface FileQuery {
   offset?: number;
 }
 
+/** What the library counts as visual, and therefore what the gallery carries. */
+const VISUAL = "(f.mime LIKE 'image/%' OR f.mime LIKE 'video/%')";
+
 const filterByKind = (kind?: FileKind) =>
-  kind === "images" ? "f.mime LIKE 'image/%'" : kind === "docs" ? "f.mime NOT LIKE 'image/%'" : "";
+  kind === "images"
+    ? "f.mime LIKE 'image/%'"
+    : kind === "videos"
+      ? "f.mime LIKE 'video/%'"
+      : kind === "docs"
+        ? `NOT ${VISUAL}`
+        : "";
 
 export class Store {
   constructor(readonly db: Db) {}
@@ -704,33 +712,53 @@ export class Store {
   }
 
   /**
-   * Every image the app knows about, newest first. Generated images are adopted
-   * into `files` on arrival, so the library and the gallery read one table and
-   * cannot disagree; `image_assets` only adds provenance.
+   * Everything the app has made or been given to look at, newest first. Both
+   * media come from `files`, which every asset is adopted into on arrival, so the
+   * library and the gallery read one table and cannot disagree about what exists;
+   * the two asset tables only add provenance, and a row has at most one of them.
+   *
+   * Video used to be filtered out here, and the effect reached further than the
+   * gallery: a clip was in the library the whole time, so nothing was lost, but
+   * the only place it appeared was the queue card that had just produced it.
    */
-  listImages(limit: number, offset: number): StudioImage[] {
+  listGallery(limit: number, offset: number): GeneratedAsset[] {
     return this.db
       .all(
-        `SELECT f.id AS id, f.mime AS mime, f.width AS width, f.height AS height,
-                COALESCE(a.provider, f.source) AS provider, a.model AS model, f.name AS name,
-                COALESCE(a.parent_image_ids, '[]') AS parents, f.created_at AS created_at
-           FROM files f LEFT JOIN image_assets a ON a.image_id = f.id
-          WHERE f.mime LIKE 'image/%'
+        `SELECT f.id AS id, f.mime AS mime, f.width AS width, f.height AS height, f.name AS name,
+                COALESCE(i.provider, v.provider, f.source) AS provider,
+                COALESCE(i.model, v.model) AS model,
+                COALESCE(i.parent_image_ids, v.parent_image_ids, '[]') AS parents,
+                v.duration_ms AS duration_ms, v.poster_image_id AS poster_image_id,
+                f.created_at AS created_at
+           FROM files f
+           LEFT JOIN image_assets i ON i.image_id = f.id
+           LEFT JOIN video_assets v ON v.video_id = f.id
+          WHERE ${VISUAL}
           ORDER BY f.created_at DESC, f.id LIMIT ? OFFSET ?`,
         limit,
         offset,
       )
-      .map((row) => ({
-        id: String(row.id),
-        mime: String(row.mime),
-        width: row.width == null ? null : Number(row.width),
-        height: row.height == null ? null : Number(row.height),
-        provider: (row.provider as string | null) ?? null,
-        model: (row.model as string | null) ?? null,
-        name: (row.name as string | null) ?? null,
-        parents: json<string[]>(row.parents, []),
-        createdAt: Number(row.created_at),
-      }));
+      .map((row) => {
+        const id = String(row.id);
+        const mime = String(row.mime);
+        return {
+          id,
+          assetId: id,
+          // The mime and not the id prefix: an upload is a `file_` row that the
+          // gallery shows all the same, and its bytes decide what it is.
+          kind: mime.startsWith("video/") ? ("video" as const) : ("image" as const),
+          mime,
+          width: row.width == null ? null : Number(row.width),
+          height: row.height == null ? null : Number(row.height),
+          name: (row.name as string | null) ?? null,
+          provider: (row.provider as string | null) ?? null,
+          model: (row.model as string | null) ?? null,
+          parents: json<string[]>(row.parents, []),
+          createdAt: Number(row.created_at),
+          durationMs: row.duration_ms == null ? null : Number(row.duration_ms),
+          posterAssetId: (row.poster_image_id as string | null) ?? null,
+        };
+      });
   }
 
   /**
@@ -747,10 +775,8 @@ export class Store {
     return orphans.length;
   }
 
-  countImages() {
-    const row = this.db.get<{ total: number }>(
-      "SELECT COUNT(*) AS total FROM files WHERE mime LIKE 'image/%'",
-    );
+  countGallery() {
+    const row = this.db.get<{ total: number }>(`SELECT COUNT(*) AS total FROM files f WHERE ${VISUAL}`);
     return Number(row?.total ?? 0);
   }
 
@@ -996,7 +1022,10 @@ export class Store {
     /** Adopted and migrated files keep the time they were actually produced. */
     createdAt?: number;
   }) {
-    if (!input.mime.startsWith("image/")) {
+    // Two identical documents are one document. Two identical assets are not:
+    // an id is the handle for a provenance row, a sidecar and a thumbnail cache,
+    // so collapsing them would save one file and dangle three references.
+    if (!input.mime.startsWith("image/") && !input.mime.startsWith("video/")) {
       const existing = this.documentBySha256(input.sha256);
       if (existing) return existing;
     }
@@ -1020,11 +1049,11 @@ export class Store {
     return this.getFile(id)!;
   }
 
-  /** The oldest non-image row holding exactly these bytes, if the library has one. */
+  /** The oldest document holding exactly these bytes, if the library has one. */
   documentBySha256(sha256: string) {
     const row = this.db.get<{ id: string }>(
-      `SELECT id FROM files WHERE sha256 = ? AND mime NOT LIKE 'image/%'
-        ORDER BY created_at, id LIMIT 1`,
+      `SELECT f.id AS id FROM files f WHERE f.sha256 = ? AND NOT ${VISUAL}
+        ORDER BY f.created_at, f.id LIMIT 1`,
       sha256,
     );
     return row ? this.getFile(String(row.id)) : undefined;
@@ -1078,10 +1107,11 @@ export class Store {
 
     // Each facet counts what the user would get by changing only that one
     // filter, so the numbers on the chips match what clicking them shows.
-    const byKind = this.db.get<{ docs: number; images: number; everything: number }>(
+    const byKind = this.db.get<{ docs: number; images: number; videos: number; everything: number }>(
       `SELECT COUNT(*) AS everything,
-              SUM(CASE WHEN f.mime LIKE 'image/%' THEN 0 ELSE 1 END) AS docs,
-              SUM(CASE WHEN f.mime LIKE 'image/%' THEN 1 ELSE 0 END) AS images
+              SUM(CASE WHEN ${VISUAL} THEN 0 ELSE 1 END) AS docs,
+              SUM(CASE WHEN f.mime LIKE 'image/%' THEN 1 ELSE 0 END) AS images,
+              SUM(CASE WHEN f.mime LIKE 'video/%' THEN 1 ELSE 0 END) AS videos
          FROM files f ${where(source, text)}`,
       ...args([source, query.source], [text, like]),
     );
@@ -1101,6 +1131,7 @@ export class Store {
           all: Number(byKind?.everything ?? 0),
           docs: Number(byKind?.docs ?? 0),
           images: Number(byKind?.images ?? 0),
+          videos: Number(byKind?.videos ?? 0),
         },
         sources,
       },
@@ -1154,16 +1185,29 @@ export class Store {
   deleteFile(id: string) {
     const file = this.getFile(id);
     this.db.run("DELETE FROM files WHERE id = ?", id);
+    // Provenance outlives nothing: the caller removes the bytes next, and an
+    // asset row whose bytes are gone is a claim that something exists when it
+    // does not. Images had a startup sweep for this, which is the right tool for
+    // a migration that never brought the bytes and the wrong one for a deletion
+    // that just happened — it left the row standing until the next launch, and
+    // video had no sweep at all.
+    this.db.run("DELETE FROM image_assets WHERE image_id = ?", id);
+    this.db.run("DELETE FROM video_assets WHERE video_id = ?", id);
     // Chunks and their vectors go with it, by cascade rather than by statement.
     this.vectorRevision += 1;
     return file;
   }
 
+  /**
+   * How much of the library is embedded, over the rows that can be. Nothing
+   * visual is counted: a clip is never chunked, so counting it would leave the
+   * index permanently one short of ready and make a finished job look unfinished.
+   */
   fileIndexSummary() {
     const row = this.db.get<{ total: number; ready: number }>(
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN embedding_status = 'ready' THEN 1 ELSE 0 END) AS ready
-       FROM files WHERE mime NOT LIKE 'image/%'`,
+       FROM files f WHERE NOT ${VISUAL}`,
     );
     return { total: Number(row?.total ?? 0), ready: Number(row?.ready ?? 0) };
   }

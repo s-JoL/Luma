@@ -306,18 +306,6 @@ export interface JsonSchema {
   anyOf?: JsonSchema[];
 }
 
-export interface StudioImage {
-  id: string;
-  mime: string;
-  width: number | null;
-  height: number | null;
-  provider: string | null;
-  model: string | null;
-  name: string | null;
-  parents: string[];
-  createdAt: number;
-}
-
 export interface McpServer {
   id: string;
   title: string;
@@ -434,7 +422,13 @@ export interface StoredEvent {
   createdAt: number;
 }
 
-export type FileKind = "all" | "docs" | "images";
+/**
+ * How the library is filtered. `videos` is its own facet rather than part of
+ * `docs`: a clip has nothing in common with a PDF, and it was reachable only by
+ * recognising an `.mp4` in a list of filenames. `docs` therefore means what is
+ * neither, which is also what makes it the set that gets indexed.
+ */
+export type FileKind = "all" | "docs" | "images" | "videos";
 
 /**
  * Where a file came from. Open-ended, because a future tool can invent its own;
@@ -509,11 +503,14 @@ export interface VideoAsset {
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
- * One asset a job produced, in the order the backend returned them. Everything
- * past `kind` is named exactly as `StudioImage` names it, so a client can render
- * a finished job with the renderer it already has for the gallery instead of
- * synthesising a tile with no filename and no provenance. `assetId` stays
- * alongside `id` because the tools and the transcript refer to assets by it.
+ * One asset a job produced, and one row of the studio's gallery: the same shape
+ * answers both, so a tile that was just rendered and one read back from the
+ * library are the same thing to a client. There used to be a second, image-only
+ * shape for the gallery, and what it cost was that a video had nowhere to live —
+ * the queue could show one while it was fresh, and it vanished on reload.
+ *
+ * `assetId` stays alongside `id` because the tools and the transcript refer to
+ * assets by it.
  */
 export interface GeneratedAsset {
   id: string;

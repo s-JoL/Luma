@@ -8,9 +8,21 @@
  * that takes two minutes survives a reload and a phone locking its screen. MCP
  * tools have no job of their own and are still run inline.
  */
-import { ChevronDown, Clock, Download, ImagePlus, Layers, Menu as MenuIcon, Pencil, Plus, Upload, X } from "lucide-react";
+import {
+  ChevronDown,
+  Clock,
+  Download,
+  ImagePlus,
+  Layers,
+  Menu as MenuIcon,
+  Pencil,
+  Play,
+  Plus,
+  Upload,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { GeneratedAsset, JobRecord, JsonSchema, StudioImage, StudioTool } from "@shared/types.ts";
+import type { GeneratedAsset, JobRecord, JsonSchema, StudioTool } from "@shared/types.ts";
 import { api, watchJob } from "../api.ts";
 import { askToNotify, notifyFinished } from "../notify.ts";
 import { assetIdOf, ProvenanceCard } from "../provenance.tsx";
@@ -95,7 +107,7 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
   const [enabled, setEnabled] = useState(true);
   const [toolKey, setToolKey] = useState("");
   const [values, setValues] = useState<Record<string, unknown>>({});
-  const [gallery, setGallery] = useState<StudioImage[]>([]);
+  const [gallery, setGallery] = useState<GeneratedAsset[]>([]);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
@@ -107,10 +119,8 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
   const [past, setPast] = useState<JobRecord[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [zoom, setZoom] = useState("");
-  const [detail, setDetail] = useState<StudioImage | null>(null);
+  const [detail, setDetail] = useState<GeneratedAsset | null>(null);
   const [picking, setPicking] = useState<"" | "source" | "extra">("");
-  /** A video an MCP tool returned inline; jobs show theirs in the queue. */
-  const [video, setVideo] = useState("");
   /** Files whose bytes are gone; hidden rather than shown as broken tiles. */
   const [missing, setMissing] = useState<ReadonlySet<string>>(new Set());
   const galleryRef = useRef<HTMLDivElement>(null);
@@ -153,9 +163,8 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
     void (async () => {
       try {
         // Only unfinished work is picked up on load. A finished job's output is
-        // already in the gallery below, or — for video, which the gallery does
-        // not carry — in the file library, so listing it again would bury the
-        // gallery under a history nobody asked for.
+        // already in the gallery below, whichever medium it is, so listing the
+        // job again would bury the gallery under a history nobody asked for.
         const [catalogue, queued, running, done] = await Promise.all([
           api.studioTools(),
           api.jobs({ status: "queued", limit: 12 }),
@@ -184,15 +193,18 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
     });
   }, []);
 
-  /** Everything the finished job produced, so a reload does not lose it. */
+  /**
+   * Everything the finished job produced, so a reload does not lose it. A job's
+   * asset is already a gallery row, so nothing is converted here and a fresh tile
+   * carries the same filename and provenance as one read back from the library.
+   */
   const absorb = useCallback((job: JobRecord) => {
-    const images = job.assets.filter((asset) => asset.kind === "image");
-    if (!images.length) return;
+    if (!job.assets.length) return;
     setGallery((current) => [
-      ...images.map((asset) => galleryEntry(asset, job)),
-      ...current.filter((image) => !images.some((asset) => asset.assetId === image.id)),
+      ...job.assets,
+      ...current.filter((item) => !job.assets.some((asset) => asset.assetId === item.assetId)),
     ]);
-    setTotal((current) => current + images.length);
+    setTotal((current) => current + job.assets.length);
   }, []);
 
   /**
@@ -378,16 +390,15 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
       }
       const result = await api.studioRun(tool.serverId, tool.name, prune(values));
       toast(`已生成 · ${formatDuration(result.elapsedMs)}`);
-      // The gallery is the image library; a video from an MCP tool has no job
-      // row to live in, so it plays next to the form instead.
-      if (result.videoId) {
-        setVideo(result.videoId);
-        return;
-      }
       if (!result.imageId) return;
+      // An MCP tool answers in one call and has no job row, so the tile is built
+      // from what the call returned. The reload after it reads the library row
+      // and fills in the filename this cannot know.
       setGallery((current) => [
         {
           id: result.imageId!,
+          assetId: result.imageId!,
+          kind: "image",
           mime: result.mime,
           width: result.width,
           height: result.height,
@@ -396,6 +407,8 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           name: null,
           parents: [],
           createdAt: Date.now(),
+          durationMs: null,
+          posterAssetId: null,
         },
         ...current,
       ]);
@@ -658,8 +671,6 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
               过去 {estimate.samples} 次里，一半在 {formatDuration(estimate.ms)} 内完成
             </p>
           ) : null}
-
-          {video ? <VideoView className="w-full" videoId={video} /> : null}
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col md:overflow-y-auto">
@@ -669,69 +680,32 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           >
             {metrics.column && metrics.row
               ? gallery
-                  .filter((image) => !missing.has(image.id))
-                  .map((image) => {
-                    const stored = image.width && image.height ? image.width / image.height : 0;
-                    const ratio = stored || measured[image.id] || 1;
+                  .filter((item) => !missing.has(item.assetId))
+                  .map((item) => {
+                    const stored = item.width && item.height ? item.width / item.height : 0;
+                    const ratio = stored || measured[item.assetId] || 1;
                     return (
-                      <div
-                        key={image.id}
-                        className="group relative overflow-hidden rounded-lg border bg-muted transition-[transform,box-shadow] hover:z-1 hover:shadow-lg"
-                        style={{
-                          gridRowEnd: `span ${rowSpan(metrics, ratio)}`,
-                        }}
-                        // Dragged onto the source slot, which is the shortest path
-                        // from "that one" to editing it.
-                        draggable
-                        onDragStart={(event) => event.dataTransfer.setData("text/plain", image.id)}
-                      >
-                        <button
-                          aria-label={`打开作品 ${artworkName(image)}`}
-                          className="block size-full"
-                          onClick={() => setDetail(image)}
-                        >
-                          <img
-                            className="size-full object-cover"
-                            src={`/v1/images/${image.id}?w=320`}
-                            alt=""
-                            loading="lazy"
-                            decoding="async"
-                            onLoad={(event) => {
-                              // Images migrated before dimensions were recorded
-                              // fall back to a square, then correct themselves.
-                              if (stored) return;
-                              const { naturalWidth, naturalHeight } = event.currentTarget;
-                              if (!naturalWidth || !naturalHeight) return;
-                              setMeasured((current) =>
-                                current[image.id]
-                                  ? current
-                                  : {
-                                      ...current,
-                                      [image.id]: naturalWidth / naturalHeight,
-                                    },
-                              );
-                            }}
-                            onError={() => setMissing((current) => new Set(current).add(image.id))}
-                          />
-                        </button>
-                        {/* Editing was two clicks and a modal away from the thing
-                            you wanted to edit. Always visible without a pointer,
-                            because hover is not a gesture a phone has. */}
-                        <button
-                          className="absolute top-1 right-1 rounded-md bg-background/85 p-1.5 opacity-0 shadow transition-opacity group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
-                          aria-label={`以 ${artworkName(image)} 为源编辑`}
-                          onClick={() => useAsSource(image.id)}
-                        >
-                          <Pencil className="size-3.5" />
-                        </button>
-                      </div>
+                      <GalleryTile
+                        key={item.assetId}
+                        item={item}
+                        span={rowSpan(metrics, ratio)}
+                        measured={Boolean(stored)}
+                        onOpen={() => setDetail(item)}
+                        onEdit={() => useAsSource(item.assetId)}
+                        onRatio={(value) =>
+                          setMeasured((current) =>
+                            current[item.assetId] ? current : { ...current, [item.assetId]: value },
+                          )
+                        }
+                        onMissing={() => setMissing((current) => new Set(current).add(item.assetId))}
+                      />
                     );
                   })
               : null}
           </div>
 
           {total === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">还没有作品。用左边的工具生成第一张吧。</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">还没有作品。用左边的工具生成第一件吧。</p>
           ) : null}
           {gallery.length < total ? (
             <div className="p-3 pt-0">
@@ -751,42 +725,58 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
         footer={
           detail ? (
             <>
-              <Button onClick={() => useAsSource(detail.id)}>
-                <Pencil />
-                以此为源编辑
-              </Button>
+              {/* Nothing here edits a clip, so the button is not offered for one. */}
+              {detail.kind === "image" ? (
+                <Button onClick={() => useAsSource(detail.assetId)}>
+                  <Pencil />
+                  以此为源编辑
+                </Button>
+              ) : null}
               <a
                 className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3.5 font-medium text-secondary-foreground transition-colors hover:bg-secondary/70"
-                href={`/v1/images/${detail.id}`}
-                download={`${detail.id}.png`}
+                href={`/v1/${detail.kind === "video" ? "videos" : "images"}/${detail.assetId}`}
+                // The library's own filename, which carries the real extension: a
+                // JPEG saved as `.png` is a file the OS then opens with the wrong
+                // thing.
+                download={artworkName(detail)}
               >
                 <Download className="size-4" />
-                下载原图
+                {detail.kind === "video" ? "下载视频" : "下载原图"}
               </a>
             </>
           ) : null
         }
       >
-        {/* The picture beside where it came from. This used to re-list the
-            backend, the size and the parents by hand, which was a worse subset of
-            what `/provenance` answers and had no prompt in it — the one thing you
-            open a finished picture to read. */}
+        {/* The work beside where it came from. This used to re-list the backend,
+            the size and the parents by hand, which was a worse subset of what
+            `/provenance` answers and had no prompt in it — the one thing you open
+            a finished picture to read. */}
         {detail ? (
           <div className="flex flex-col gap-3 md:flex-row md:items-start">
-            <img
-              className="max-h-[60dvh] min-w-0 flex-1 cursor-zoom-in rounded-lg border object-contain"
-              src={`/v1/images/${detail.id}?w=1280`}
-              alt=""
-              onClick={() => setZoom(`/v1/images/${detail.id}`)}
-            />
-            <ProvenanceCard assetId={detail.id} />
+            {detail.kind === "video" ? (
+              <VideoView
+                className="max-h-[60dvh]"
+                videoId={detail.assetId}
+                posterImageId={detail.posterAssetId}
+                durationMs={detail.durationMs}
+              />
+            ) : (
+              <img
+                className="max-h-[60dvh] min-w-0 flex-1 cursor-zoom-in rounded-lg border object-contain"
+                src={`/v1/images/${detail.assetId}?w=1280`}
+                alt=""
+                onClick={() => setZoom(`/v1/images/${detail.assetId}`)}
+              />
+            )}
+            <ProvenanceCard assetId={detail.assetId} />
           </div>
         ) : null}
       </Modal>
 
       {picking ? (
         <ImagePicker
-          images={gallery}
+          // The gallery holds both media now; only a still can be a source.
+          images={gallery.filter((item) => item.kind === "image")}
           multiple={picking === "extra"}
           onClose={() => setPicking("")}
           onSelect={(ids) => {
@@ -812,37 +802,96 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
 }
 
 /**
- * Fields the server puts on a finished job's assets. They are optional here
- * because the payload is being extended: a client that demanded them would show
- * `null` as a filename for every build that has not caught up yet.
+ * One work in the grid, image or clip.
+ *
+ * A video has no thumbnail to serve — there is no ffmpeg here to cut one, and the
+ * poster it carries is only the still it was animated from, which a text-to-video
+ * does not have. So the tile is the video element itself at `preload="metadata"`,
+ * which paints its first frame and, because the route honours `Range`, costs the
+ * head of the file rather than the whole thing. It is marked as a clip either way:
+ * a first frame with no badge is indistinguishable from a photograph.
  */
-interface AssetDescriptor {
-  name?: string | null;
-  provider?: string | null;
-  model?: string | null;
-  parentImageIds?: string[] | null;
-  parents?: string[] | null;
-  createdAt?: number | null;
-}
-
-/**
- * The gallery row a finished job contributes. The asset descriptor is the
- * answer wherever it has one; the job only fills what the descriptor left out,
- * which is what stops a fresh tile from being unnamed until a reload.
- */
-function galleryEntry(asset: GeneratedAsset, job: JobRecord): StudioImage {
-  const described = asset as GeneratedAsset & AssetDescriptor;
-  return {
-    id: asset.assetId,
-    mime: asset.mime,
-    width: asset.width,
-    height: asset.height,
-    provider: described.provider ?? null,
-    model: described.model ?? job.modelName,
-    name: described.name ?? null,
-    parents: described.parentImageIds ?? described.parents ?? job.sources,
-    createdAt: described.createdAt ?? job.finishedAt ?? Date.now(),
-  };
+function GalleryTile({
+  item,
+  span,
+  measured,
+  onOpen,
+  onEdit,
+  onRatio,
+  onMissing,
+}: {
+  item: GeneratedAsset;
+  span: number;
+  /** True when the row already knew the dimensions, so nothing needs measuring. */
+  measured: boolean;
+  onOpen: () => void;
+  onEdit: () => void;
+  onRatio: (ratio: number) => void;
+  onMissing: () => void;
+}) {
+  const isVideo = item.kind === "video";
+  return (
+    <div
+      className="group relative overflow-hidden rounded-lg border bg-muted transition-[transform,box-shadow] hover:z-1 hover:shadow-lg"
+      style={{ gridRowEnd: `span ${span}` }}
+      // Dragged onto the source slot, which is the shortest path from "that one"
+      // to editing it. Only an image: nothing here takes a clip as input.
+      draggable={!isVideo}
+      onDragStart={(event) => event.dataTransfer.setData("text/plain", item.assetId)}
+    >
+      <button aria-label={`打开作品 ${artworkName(item)}`} className="block size-full" onClick={onOpen}>
+        {isVideo ? (
+          <video
+            className="size-full object-cover"
+            src={`/v1/videos/${item.assetId}`}
+            poster={item.posterAssetId ? `/v1/images/${item.posterAssetId}?w=320` : undefined}
+            preload="metadata"
+            muted
+            playsInline
+            onLoadedMetadata={(event) => {
+              if (measured) return;
+              const { videoWidth, videoHeight } = event.currentTarget;
+              if (videoWidth && videoHeight) onRatio(videoWidth / videoHeight);
+            }}
+            onError={onMissing}
+          />
+        ) : (
+          <img
+            className="size-full object-cover"
+            src={`/v1/images/${item.assetId}?w=320`}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onLoad={(event) => {
+              // Images migrated before dimensions were recorded fall back to a
+              // square, then correct themselves.
+              if (measured) return;
+              const { naturalWidth, naturalHeight } = event.currentTarget;
+              if (naturalWidth && naturalHeight) onRatio(naturalWidth / naturalHeight);
+            }}
+            onError={onMissing}
+          />
+        )}
+      </button>
+      {isVideo ? (
+        <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-1 rounded-md bg-background/85 px-1.5 py-0.5 text-xs shadow">
+          <Play className="size-3 fill-current" />
+          {item.durationMs ? formatDuration(item.durationMs) : "视频"}
+        </span>
+      ) : (
+        /* Editing was two clicks and a modal away from the thing you wanted to
+           edit. Always visible without a pointer, because hover is not a gesture
+           a phone has. */
+        <button
+          className="absolute top-1 right-1 rounded-md bg-background/85 p-1.5 opacity-0 shadow transition-opacity group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+          aria-label={`以 ${artworkName(item)} 为源编辑`}
+          onClick={onEdit}
+        >
+          <Pencil className="size-3.5" />
+        </button>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -931,7 +980,7 @@ function ImagePicker({
   onSelect,
   onClose,
 }: {
-  images: StudioImage[];
+  images: GeneratedAsset[];
   multiple: boolean;
   onSelect: (ids: string[]) => void;
   onClose: () => void;

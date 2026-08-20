@@ -1,5 +1,5 @@
 /**
- * Where a picture came from, and the two things worth doing with the answer.
+ * Where a work came from, and the two things worth doing with the answer.
  *
  * A generated image used to be a dead end: the prompt that made it was somewhere
  * up the transcript, and the parameters were nowhere at all. Both are on record —
@@ -9,7 +9,9 @@
  * Two actions, because they are different intentions. "Again" repeats the request
  * unchanged, which is what you want when a model is stochastic and the last roll
  * was nearly right. "Adjust" opens the same parameters in the studio's form, which
- * is what you want when it was not.
+ * is what you want when it was not. Both work on a clip exactly as they do on a
+ * picture — it is the same job row either way — so only the wording turns on which
+ * it is, since "再来一张" is not a thing you say about four seconds of video.
  */
 import { Copy, Images, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -66,13 +68,15 @@ export function ProvenanceCard({ assetId }: { assetId: string }) {
 
   const job = record.job;
   const { prompt, rest } = readable(job?.params ?? {});
+  const video = record.kind === "video";
+  const another = video ? "再生成一段" : "再来一张";
 
   const again = async () => {
     if (!job) return;
     setBusy(true);
     try {
       await api.submitJob({ modelId: job.modelId, op: job.op, params: job.params, sources: job.sources });
-      toast("已排队，同样的参数再来一张");
+      toast(`已排队，同样的参数${another}`);
     } catch (reason) {
       toast(reason instanceof Error ? reason.message : String(reason), true);
     } finally {
@@ -83,7 +87,7 @@ export function ProvenanceCard({ assetId }: { assetId: string }) {
   return (
     <div className="flex max-h-[80dvh] w-80 flex-col gap-3 overflow-y-auto rounded-xl border bg-card p-3 text-sm shadow-2xl">
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <Badge tone="outline">{record.kind === "video" ? "视频" : "图片"}</Badge>
+        <Badge tone="outline">{video ? "视频" : "图片"}</Badge>
         {record.width && record.height ? <Badge tone="outline">{`${record.width}×${record.height}`}</Badge> : null}
         {record.durationMs ? <Badge tone="outline">{formatDuration(record.durationMs)}</Badge> : null}
         {job ? <Badge tone="outline">{OP_LABELS[job.op] ?? job.op}</Badge> : null}
@@ -148,7 +152,7 @@ export function ProvenanceCard({ assetId }: { assetId: string }) {
           {job.repeatable ? (
             <>
               <Button variant="secondary" onClick={() => void again()} disabled={busy}>
-                <RefreshCw /> 同参再来一张
+                <RefreshCw /> 同参{another}
               </Button>
               <Button
                 variant="ghost"
@@ -156,16 +160,16 @@ export function ProvenanceCard({ assetId }: { assetId: string }) {
                   handToStudio({ modelId: job.modelId, op: job.op, params: job.params, sources: job.sources })
                 }
               >
-                <SlidersHorizontal /> 改参数重画
+                <SlidersHorizontal /> 改参数{video ? "重做" : "重画"}
               </Button>
             </>
           ) : (
-            <p className="text-xs text-muted-foreground">生成它的模型已不可用，无法照原样再来一张。</p>
+            <p className="text-xs text-muted-foreground">生成它的模型已不可用，无法照原样重来。</p>
           )}
         </div>
       ) : (
         <p className="border-t pt-3 text-xs text-muted-foreground">
-          没有对应的生成记录：它可能是上传的，或者是在队列开始记账之前画的。
+          没有对应的生成记录：它可能是上传的，或者是在队列开始记账之前生成的。
         </p>
       )}
     </div>

@@ -13,6 +13,7 @@ import type {
   FileKind,
   FileLibrary,
   FileRecord,
+  GeneratedAsset,
   JobInput,
   JobRecord,
   JobStatus,
@@ -32,7 +33,6 @@ import type {
   RunSummary,
   SecuritySettings,
   StoredMessage,
-  StudioImage,
   StudioTool,
 } from "@shared/types.ts";
 
@@ -248,7 +248,7 @@ export const api = {
 
   studioTools: () => request<{ items: StudioTool[]; enabled: boolean }>("GET", "/studio/tools"),
   gallery: (offset = 0, limit = 60) =>
-    request<{ items: StudioImage[]; total: number }>("GET", `/studio/gallery?offset=${offset}&limit=${limit}`),
+    request<{ items: GeneratedAsset[]; total: number }>("GET", `/studio/gallery?offset=${offset}&limit=${limit}`),
   /** Where an asset came from. The `img_`/`vid_` prefix picks the route. */
   provenance: (assetId: string) =>
     request<Provenance>("GET", `/${assetId.startsWith("vid_") ? "videos" : "images"}/${assetId}/provenance`),

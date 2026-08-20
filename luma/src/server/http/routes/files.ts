@@ -16,6 +16,9 @@ const EXTENSION_MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".gif": "image/gif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".md": "text/markdown",
@@ -95,24 +98,33 @@ export function fileRoutes(services: Services) {
         ? upload.type
         : (EXTENSION_MIME[extension] ?? "application/octet-stream");
     const isImage = mime.startsWith("image/");
+    const isVideo = mime.startsWith("video/");
+    /**
+     * A picture or a clip goes in as an asset, not as a document: a typed id, the
+     * asset directory, a provenance row, and no trip through the indexer. An
+     * uploaded clip used to land as a `file_` row instead, which meant the one
+     * route that serves video bytes — and it only answers to a `vid_` id — could
+     * not play the thing the library had just accepted.
+     */
+    const visual = isImage || isVideo;
     const sha256 = createHash("sha256").update(bytes).digest("hex");
 
     // Re-uploading a document the library already holds returns that entry
     // rather than a second copy. Deciding before the write is what keeps the
     // bytes off disk: `addFile` would also dedupe, but only after this route
-    // had already written a file nothing would ever reference. Images are
+    // had already written a file nothing would ever reference. Assets are
     // exempt because two identical ones still need separate identities — a
     // generated image and the same image re-used as an edit source.
-    const duplicate = isImage ? undefined : store.documentBySha256(sha256);
+    const duplicate = visual ? undefined : store.documentBySha256(sha256);
     if (duplicate) return context.json(publicFile(duplicate), 200);
 
-    const id = `${isImage ? "img" : "file"}_${randomBytes(16).toString("hex")}`;
+    const id = `${isImage ? "img" : isVideo ? "vid" : "file"}_${randomBytes(16).toString("hex")}`;
     // The stored name is built from values this server knows, never from the
     // browser's `Content-Type`. It used to end `.${mime.split("/")[1]}`, and a
     // part declaring `image/..\..\..\pwned.txt` wrote attacker bytes wherever
     // that resolved to — the key file beside the database included.
     const storageExtension = MIME_EXTENSION[mime] ?? (EXTENSION_MIME[extension] ? extension : ".bin");
-    const dir = isImage ? paths.assetFiles : paths.files;
+    const dir = visual ? paths.assetFiles : paths.files;
     fs.mkdirSync(dir, { recursive: true });
     const diskPath = path.join(dir, `${id}${storageExtension}`);
     fs.writeFileSync(diskPath, bytes);
@@ -140,6 +152,12 @@ export function fileRoutes(services: Services) {
         origin: "upload",
       });
       store.registerImageAsset({ image_id: id, mime_type: mime, provider: "upload" });
+      forgetAssetIndex();
+    } else if (isVideo) {
+      // No sidecar: that exists for the edit tools, and nothing edits a clip.
+      // Dimensions and duration stay null — reading them needs a demuxer this
+      // server does not have — and every reader already treats them as optional.
+      store.registerVideoAsset({ videoId: id, mime, provider: "upload" });
       forgetAssetIndex();
     } else {
       const capabilities = config.capabilities();

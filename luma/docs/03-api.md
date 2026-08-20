@@ -489,12 +489,18 @@ GET    /v1/images/:imageId/provenance     → Provenance
 GET    /v1/videos/:videoId/provenance     → Provenance
 ```
 
-One library holds everything the user owns: uploads, notes written in the app,
-and images produced by a tool. `kind` filters documents against images, `source`
-filters by provenance (`upload`, `generated`, `note`, `librechat`), and `q`
-matches the filename. Filtering happens in SQL because the library is mostly
-generated images — several hundred rows — and shipping all of them so the
-browser can filter would defeat the point.
+One library holds everything the user owns: uploads, notes written in the app, and
+the pictures and clips a tool produced. `kind` is `all`, `images`, `videos` or
+`docs`, `source` filters by provenance (`upload`, `generated`, `note`,
+`librechat`), and `q` matches the filename. Filtering happens in SQL because the
+library is mostly generated images — several hundred rows — and shipping all of
+them so the browser can filter would defeat the point.
+
+`videos` is its own value rather than part of `docs` because `docs` used to mean
+"not an image", which quietly made a clip a document: filed with the PDFs, shown
+with a page glyph, offered a Reindex button, and identifiable only by spotting an
+`.mp4` in a column of filenames. `docs` now means neither of the visual kinds,
+which is also exactly the set that gets chunked and embedded.
 
 `facets` carries the count for each value of one filter with the *other* filters
 applied, so the number on a chip is what clicking it will show.
@@ -507,6 +513,15 @@ and no second copy is chunked, embedded and retrieved
 a re-uploaded image really does get a new row: an image's id is also the handle
 for its `image_assets` row, its metadata sidecar and its thumbnail cache, so
 collapsing two of them would save one file and dangle three references.
+
+An uploaded picture or clip goes in as an asset and not as a document: an `img_` or
+`vid_` id, bytes in the asset directory, a provenance row, and no trip through the
+indexer. For an image that is what makes it usable as an edit source. For video it
+is what makes it playable at all — `GET /v1/videos/:videoId` only answers to a
+`vid_` id, so a clip filed as a `file_` row was in the library and unopenable. A
+clip gets no sidecar, since that exists for the edit tools and nothing edits one,
+and its width, height and duration stay null: reading them needs a demuxer this
+server does not have, and every reader already treats them as optional.
 
 `POST /files/notes` writes a Markdown document into the same library and the same
 index as an upload; `PUT /files/:id/text` rewrites one and reindexes it. Notes
@@ -556,7 +571,7 @@ identical otherwise, and only the second one is worth waiting out.
 
 ```
 GET    /v1/studio/tools                   → { items: StudioTool[], enabled }
-GET    /v1/studio/gallery?limit&offset    → { items: StudioImage[], total, offset, limit }
+GET    /v1/studio/gallery?limit&offset    → { items: GeneratedAsset[], total, offset, limit }
 POST   /v1/studio/run                     { serverId, tool, args }
                                           → { jobId?, imageId? | videoId?, mime, width, height,
                                               durationMs?, provider, model, elapsedMs }
@@ -566,6 +581,14 @@ The studio calls generation directly, bypassing the agent loop, so a deliberate
 generate-or-edit does not pay for a model turn. Every tool is described by a JSON
 Schema and the form is generated from it, which means a new backend shows up in the
 UI without any client change.
+
+The gallery is everything visual the library holds, image and video alike, newest
+first, and it answers in the same `GeneratedAsset` shape a finished job's output
+does. That is one shape and not two so a client renders a tile it has just made
+and a tile it read back with the same code. It was image-only once, and the cost
+was not a missing query but a missing place: a clip had a library row the whole
+time and nowhere to be seen except the queue card that produced it, which is gone
+on the next reload.
 
 Two things feed the list. A generation model contributes one entry per operation
 under the id `model:<modelId>`, with `modelId` and `op` on the entry and its form
