@@ -15,16 +15,26 @@ struct MarkdownText: View, Equatable {
     }
 
     var body: some View {
-        Markdown(ProseFixups.apply(Citations.linkify(text, using: citations)))
+        Markdown(MarkdownText.source(text, citations: citations))
             .markdownTheme(.luma)
+            .markdownImageProvider(TranscriptImageProvider(onImage: onImage))
             .environment(\.openURL, OpenURLAction { url in
                 handle(url) ? .handled : .systemAction
             })
     }
 
-    /// A citation chip and a generated image are both links by the time the
-    /// renderer sees them, so both are intercepted here rather than needing a
-    /// custom inline renderer.
+    /// What the renderer is handed rather than what the model wrote: citations
+    /// as links, the two prose repairs, and a paragraph of its own for every
+    /// picture. The pictures go last because that step reads the text the other
+    /// two produce.
+    static func source(_ text: String, citations: [String: Citation]) -> String {
+        InlineImages.ownParagraph(ProseFixups.apply(Citations.linkify(text, using: citations)))
+    }
+
+    /// A citation chip is a link by the time the renderer sees it, and so is an
+    /// `image://` reference the model wrote as a link rather than as a picture,
+    /// so both are intercepted here rather than needing a custom inline
+    /// renderer. A picture is drawn instead, and carries its own tap.
     private func handle(_ url: URL) -> Bool {
         let text = url.absoluteString
         if text.hasPrefix(Citations.citeScheme) {
@@ -39,6 +49,31 @@ struct MarkdownText: View, Equatable {
             return true
         }
         return false
+    }
+}
+
+/// The hook MarkdownUI has no default for. `image://` is not a scheme
+/// `NetworkImage` can open, and its failure state is a zero-sized nothing, so an
+/// answer that embedded a generated picture used to show the sentence about the
+/// picture and no picture — while `withoutRepeatedImages` had already dropped the
+/// standalone copy on the grounds that the prose would render it. This is the
+/// place where that becomes true, and it is the same place the web client
+/// resolves the reference (`transformUrl` in `src/web/markdown.tsx`).
+///
+/// The conformance is `@preconcurrency` because MarkdownUI declares the hook
+/// `nonisolated` while everything it can return is a view: it is only ever
+/// called from a body being built, so the isolation is real and the check for it
+/// is left to the runtime.
+@MainActor
+private struct TranscriptImageProvider: @preconcurrency ImageProvider {
+    var onImage: ((ImageId) -> Void)?
+
+    func makeImage(url: URL?) -> some View {
+        if let id = url.flatMap({ ImageRef.parse($0.absoluteString) }) {
+            TranscriptPicture(imageId: id) { onImage?(id) }
+        } else {
+            DefaultImageProvider.default.makeImage(url: url)
+        }
     }
 }
 

@@ -152,14 +152,7 @@ struct TurnView: View, Equatable {
         case .thinking(let text):
             ThinkingBlock(text: text, autoExpanded: isStreaming && turn.parts.count == 1)
         case .image(let id):
-            AuthedImage(imageId: id, width: 1280)
-                .frame(maxHeight: 600)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(Color.hairline, lineWidth: 1)
-                )
-                .contentShape(Rectangle())
-                .onTapGesture { onImage?(id) }
+            TranscriptPicture(imageId: id) { onImage?(id) }
         case .video(let id, let poster, _):
             VideoPoster(poster: poster)
                 .frame(maxHeight: 600)

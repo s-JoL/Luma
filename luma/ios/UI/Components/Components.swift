@@ -141,6 +141,27 @@ enum Format {
     }
 }
 
+/// A picture in an answer, whichever way it arrived: the part the transcript
+/// kept from a tool result, or the `image://` reference the model wrote into its
+/// prose. One view for both, because a reader cannot tell those apart and the
+/// two must not drift into looking different. Sized like the web's
+/// `max-h-150 w-fit rounded-lg border`, and tapping opens the full-size viewer.
+struct TranscriptPicture: View {
+    let imageId: ImageId
+    var onTap: (() -> Void)?
+
+    var body: some View {
+        AuthedImage(imageId: imageId, width: 1280)
+            .frame(maxHeight: 600)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(Color.hairline, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { onTap?() }
+    }
+}
+
 struct ZoomedImage: Identifiable {
     let id: String
     var imageId: ImageId { ImageId(id) }

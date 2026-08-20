@@ -62,12 +62,18 @@ struct StreamingText: View, Equatable {
 /// A turn's prose split into the part that will not change again and the tail
 /// that still might. Everything up to the last blank line has settled: Markdown
 /// blocks are separated by one, so a block before it can no longer be extended.
+///
+/// A finished picture settles the same way without waiting for that blank line.
+/// `StreamingText` builds a `Text`, which can only show a picture's alt text —
+/// prose the answer never wrote, replaced by the picture a moment later. The
+/// block renderer draws it straight away instead, which is also when the web
+/// client draws it.
 enum ProseSplit {
     static func split(_ text: String, streaming: Bool) -> (settled: String, tail: String) {
         guard streaming else { return (text, "") }
-        guard let breakRange = text.range(of: "\n\n", options: .backwards) else {
-            return ("", text)
-        }
-        return (String(text[..<breakRange.upperBound]), String(text[breakRange.upperBound...]))
+        let block = text.range(of: "\n\n", options: .backwards)?.upperBound
+        let picture = InlineImages.endOfLastPicture(in: text)
+        guard let cut = [block, picture].compactMap({ $0 }).max() else { return ("", text) }
+        return (String(text[..<cut]), String(text[cut...]))
     }
 }
