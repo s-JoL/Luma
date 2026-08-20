@@ -1,0 +1,8 @@
+# Generated from project.yml by xcodegen; never hand-edited, so never committed.
+Luma.xcodeproj/
+
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
