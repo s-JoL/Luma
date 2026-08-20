@@ -27,6 +27,17 @@ export interface VideoPart {
   durationMs?: number;
 }
 
+/**
+ * A document the reader attached — anything that is neither picture nor clip.
+ * It carries its own name because there is no thumbnail to recognise it by.
+ */
+export interface FilePart {
+  kind: "file";
+  fileId: string;
+  name: string;
+  bytes?: number;
+}
+
 export interface ToolPart {
   kind: "tool";
   callId: string;
@@ -58,7 +69,7 @@ export interface JobPart {
   job: JobRecord;
 }
 
-export type Part = TextPart | ThinkingPart | ImagePart | VideoPart | ToolPart | ApprovalPart | JobPart;
+export type Part = TextPart | ThinkingPart | ImagePart | VideoPart | FilePart | ToolPart | ApprovalPart | JobPart;
 
 export interface Turn {
   id: string;
@@ -112,6 +123,19 @@ function pushMedia(parts: Part[], part: Record<string, unknown>) {
       videoId: String(part.video_id),
       posterImageId: part.poster_image_id ? String(part.poster_image_id) : undefined,
       durationMs: Number(part.duration_ms) || undefined,
+    });
+  }
+  // An attachment that is neither picture nor clip. Nothing writes this yet: a
+  // document reaches the model through the searchable-file list rather than the
+  // message content, so a settled turn carries no trace of one and the chip
+  // lives only as long as the optimistic turn that sent it. Reading the ref here
+  // is what makes that a gap on the server rather than one on both sides.
+  if (part.type === "file_ref" && part.file_id) {
+    parts.push({
+      kind: "file",
+      fileId: String(part.file_id),
+      name: String(part.name ?? part.file_id),
+      bytes: Number(part.bytes) || undefined,
     });
   }
 }
@@ -402,6 +426,7 @@ export function attachmentIdsOf(turn: Turn) {
   for (const part of turn.parts) {
     if (part.kind === "image") ids.push(part.imageId);
     if (part.kind === "video") ids.push(part.videoId);
+    if (part.kind === "file") ids.push(part.fileId);
   }
   return ids;
 }

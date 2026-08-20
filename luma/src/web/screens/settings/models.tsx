@@ -1,5 +1,5 @@
 import { Pencil, Star, Trash2, Wrench } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ApiMode,
   DiscoveredModel,
@@ -39,9 +39,9 @@ import {
 const THINKING_OPTIONS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const AUTH_OPTIONS: Array<Option<ProviderAuthStyle>> = [
-  { value: "bearer", label: "Bearer 令牌", hint: "Authorization: Bearer <密钥>，绝大多数兼容端点" },
-  { value: "header", label: "自定义请求头", hint: "中转站与 Azure 形态网关，如 x-api-key、api-key" },
-  { value: "none", label: "不带凭证", hint: "自建 Ollama / llama.cpp / vLLM，靠可达性鉴权" },
+  { value: "bearer", label: "Bearer 令牌", hint: "大多数兼容接口" },
+  { value: "header", label: "自定义请求头", hint: "x-api-key、api-key 这类" },
+  { value: "none", label: "不带凭证", hint: "本机 Ollama、ComfyUI、llama.cpp" },
 ];
 
 const apiModeLabel = (mode: ApiMode) => API_MODES.find((item) => item.id === mode)?.label ?? mode;
@@ -90,7 +90,7 @@ function AuthFields({ draft, onChange }: { draft: AuthDraft; onChange: (next: Au
               onChange={(event) => onChange({ ...draft, header: event.target.value })}
             />
           </Field>
-          <Field label="前缀（可选）" hint="写在密钥前面，例如 “Bearer ” 连一个空格；留空直接发送密钥。">
+          <Field label="前缀（可选）" hint="写在密钥前面，例如 Bearer 加空格。留空就只发密钥。">
             <Input
               className="font-mono text-xs"
               value={draft.prefix}
@@ -113,12 +113,14 @@ function useCatalogue(reload: () => Promise<void>) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [defaultModelId, setDefaultModelId] = useState("");
+  const [ready, setReady] = useState(false);
 
   const refresh = useCallback(async () => {
     const [providerList, modelList] = await Promise.all([api.providers(), api.models()]);
     setProviders(providerList);
     setModels(modelList.items);
     setDefaultModelId(modelList.defaultModelId);
+    setReady(true);
     await reload();
   }, [reload]);
 
@@ -126,7 +128,7 @@ function useCatalogue(reload: () => Promise<void>) {
     void refresh().catch((error: unknown) => toast(String(error), true));
   }, [refresh, toast]);
 
-  return { providers, models, defaultModelId, refresh };
+  return { providers, models, defaultModelId, refresh, ready };
 }
 
 /**
@@ -136,7 +138,7 @@ function useCatalogue(reload: () => Promise<void>) {
  */
 export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
-  const { providers, models, refresh } = useCatalogue(reload);
+  const { providers, models, refresh, ready } = useCatalogue(reload);
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [addingProvider, setAddingProvider] = useState(false);
@@ -145,7 +147,7 @@ export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
     <>
       <Section
         title="提供方"
-        hint="一个 Base URL 加一把密钥，密钥也可以改走自定义请求头或干脆不带。同一个网关可以同时挂不同接口模式的模型。"
+        hint="地址和密钥。一个网关可以同时挂对话、生图和视频。"
         actions={
           <Button size="sm" onClick={() => setAddingProvider((value) => !value)}>
             {addingProvider ? "取消" : "添加"}
@@ -163,6 +165,11 @@ export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
                 }
               }}
             />
+          </SectionBody>
+        ) : null}
+        {!ready ? (
+          <SectionBody>
+            <Spinner className="text-muted-foreground" />
           </SectionBody>
         ) : null}
         {providers.map((provider) => {
@@ -277,15 +284,18 @@ export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
  */
 export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
-  const { providers, models, defaultModelId, refresh } = useCatalogue(reload);
+  const { providers, models, defaultModelId, refresh, ready } = useCatalogue(reload);
   const [editing, setEditing] = useState<ModelSpec | null>(null);
-  const chat = models.filter((model) => isChatKind(model.kind));
+  const chat = models
+    .filter((model) => isChatKind(model.kind))
+    .slice()
+    .sort((a, b) => Number(Boolean(b.configured)) - Number(Boolean(a.configured)));
 
   return (
     <>
       <Section
         title="对话模型"
-        hint="启用决定能不能用，星标决定是否出现在对话右上角的切换器里。默认模型是新对话的起点。"
+        hint="星标出现在对话右上角。默认模型是新对话的起点。"
         actions={
           <Button
             size="sm"
@@ -296,7 +306,11 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
           </Button>
         }
       >
-        {providers.length === 0 ? (
+        {!ready ? (
+          <SectionBody>
+            <Spinner className="text-muted-foreground" />
+          </SectionBody>
+        ) : providers.length === 0 ? (
           <SectionBody>
             <p className="text-sm text-muted-foreground">先在「提供方」里加一个端点，模型才有地方可去。</p>
           </SectionBody>
@@ -384,7 +398,7 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
 export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
   const toast = useToast();
-  const { providers, models, refresh } = useCatalogue(reload);
+  const { providers, models, refresh, ready } = useCatalogue(reload);
   const [editing, setEditing] = useState<ModelSpec | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   /** Live schemas, so a row can say which parameters it actually offers. */
@@ -407,7 +421,7 @@ export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
     <>
       <Section
         title="生成后端"
-        hint="启用决定能不能用；扳手决定是否额外作为一个可点名的工具交给对话模型。不开扳手也仍然能在创作台里手动用，也仍然可以被预设选为默认的生成模型。"
+        hint="关掉就用不了。扳手是额外给对话一个能点名的工具，创作台不需要。"
         actions={
           <Button
             size="sm"
@@ -418,10 +432,14 @@ export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
           </Button>
         }
       >
-        {generation.length === 0 ? (
+        {!ready ? (
+          <SectionBody>
+            <Spinner className="text-muted-foreground" />
+          </SectionBody>
+        ) : generation.length === 0 ? (
           <SectionBody>
             <p className="text-sm text-muted-foreground">
-              还没有生成后端。本地 ComfyUI 与托管的图片、视频接口都在这里配，创作台和对话用的是同一批。
+              还没有生成后端。
             </p>
           </SectionBody>
         ) : null}
@@ -545,13 +563,15 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
   const [loading, setLoading] = useState(false);
 
   const active = providerId || providers[0]?.id || "";
+  const pulledFor = useRef("");
   const visible = (items ?? []).filter(
     (item) =>
       item.model.toLowerCase().includes(needle.trim().toLowerCase()) &&
       (kind === "all" || item.suggestion.kind === kind),
   );
 
-  const pull = async () => {
+  const pull = useCallback(async () => {
+    if (!active) return;
     setLoading(true);
     try {
       setItems((await api.remoteModels(active)).items);
@@ -561,7 +581,21 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
     } finally {
       setLoading(false);
     }
-  };
+  }, [active, toast]);
+
+  useEffect(() => {
+    if (!active) return;
+    const provider = providers.find((item) => item.id === active);
+    if (!provider) return;
+    const canList = provider.auth?.style === "none" || provider.hasKey;
+    if (!canList) {
+      if (pulledFor.current === active) pulledFor.current = "";
+      return;
+    }
+    if (pulledFor.current === active) return;
+    pulledFor.current = active;
+    void pull();
+  }, [active, providers, pull]);
 
   const toggle = (model: string) =>
     setPicked((current) => {
@@ -576,7 +610,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
   return (
     <Section
       title="从提供方添加"
-      hint="拉取提供方的模型列表，勾选需要的批量加入，省去逐个手填。图片与视频模型会被识别出来。"
+      hint="有密钥就会自动拉列表。勾上要的，点添加。类型和上下文会先猜一遍，保存前可以改。"
       actions={
         <div className="flex items-center gap-2">
           {loading ? <Spinner className="text-muted-foreground" /> : null}
@@ -590,7 +624,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
             onChange={setProviderId}
           />
           <Button size="sm" disabled={!active} onClick={() => void pull()}>
-            拉取列表
+            {items ? "重新拉取" : "拉取列表"}
           </Button>
         </div>
       }
@@ -622,8 +656,8 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                           // Adding in bulk should not rearrange the switcher;
                           // pin deliberately, one star at a time.
                           pinned: false,
-                          contextWindow: 128000,
-                          maxTokens: 16384,
+                          contextWindow: item.suggestion.contextWindow,
+                          maxTokens: item.suggestion.maxTokens,
                           thinkingLevel: item.suggestion.reasoning ? "high" : "off",
                         })),
                       ),
@@ -632,7 +666,9 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                   if (ok) {
                     setPicked(new Set());
                     setItems(null);
+                    pulledFor.current = "";
                     await onAdded();
+                    await pull();
                   }
                 }}
               >
@@ -760,7 +796,7 @@ function ProviderEditor({
       open
       onOpenChange={(open) => !open && onCancel()}
       title={`编辑 ${provider.name}`}
-      description="密钥在列表里单独填写，这里只改地址与凭证的呈现方式。"
+      description="密钥在列表里单独填，这里只改地址和怎么带凭证。"
       className="w-[min(36rem,calc(100vw-2rem))]"
       footer={
         <>
@@ -809,7 +845,8 @@ function ModelEditor({
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState<ModelSpec>(model);
-  const [catalogue, setCatalogue] = useState<string[]>([]);
+  const [remote, setRemote] = useState<DiscoveredModel[]>([]);
+  const applied = useRef("");
   // Edited as text so a half-typed object is not thrown away on every keystroke.
   const [paramsText, setParamsText] = useState(model.params ? JSON.stringify(model.params, null, 2) : "");
   const [paramsError, setParamsError] = useState("");
@@ -820,6 +857,48 @@ function ModelEditor({
 
   const provider = providers.find((item) => item.id === draft.providerId);
   const mode = API_MODES.find((item) => item.id === draft.apiMode);
+
+  useEffect(() => {
+    if (!draft.providerId) return;
+    const host = providers.find((item) => item.id === draft.providerId);
+    if (host && host.auth?.style !== "none" && !host.hasKey) return;
+    let cancelled = false;
+    void api
+      .remoteModels(draft.providerId)
+      .then((data) => {
+        if (!cancelled) setRemote(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setRemote([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.providerId, providers]);
+
+  useEffect(() => {
+    if (!draft.model) return;
+    if (!isNew && draft.model === model.model) return;
+    const hit = remote.find((item) => item.model === draft.model);
+    if (!hit) return;
+    const key = `${draft.providerId}:${draft.model}`;
+    if (applied.current === key) return;
+    applied.current = key;
+    const suggestion = hit.suggestion;
+    setDraft((current) => ({
+      ...current,
+      id: current.id || suggestion.id,
+      name: current.name.trim() && current.name !== current.model ? current.name : suggestion.name,
+      kind: suggestion.kind,
+      ops: suggestion.ops,
+      apiMode: suggestion.apiMode,
+      reasoning: suggestion.reasoning,
+      input: suggestion.input,
+      contextWindow: suggestion.contextWindow,
+      maxTokens: suggestion.maxTokens,
+      thinkingLevel: suggestion.reasoning ? (current.thinkingLevel === "off" ? "high" : current.thinkingLevel) : "off",
+    }));
+  }, [draft.model, draft.providerId, isNew, model.model, remote]);
 
   return (
     <Modal
@@ -878,9 +957,9 @@ function ModelEditor({
               <Button
                 onClick={async () => {
                   try {
-                    const remote = await api.remoteModels(draft.providerId);
-                    setCatalogue(remote.items.map((item) => item.model));
-                    toast("已拉取模型列表");
+                    const data = await api.remoteModels(draft.providerId);
+                    setRemote(data.items);
+                    toast("已更新模型列表");
                   } catch (error) {
                     toast(error instanceof Error ? error.message : String(error), true);
                   }
@@ -890,15 +969,15 @@ function ModelEditor({
               </Button>
             </div>
             <datalist id="remote-models">
-              {catalogue.map((item) => (
-                <option key={item} value={item} />
+              {remote.map((item) => (
+                <option key={item.model} value={item.model} />
               ))}
             </datalist>
           </Field>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="接口模式" hint="模式决定这个模型能做什么">
+          <Field label="接口模式">
             <Select
               value={draft.apiMode}
               options={API_MODES.map((item) => ({
@@ -954,7 +1033,7 @@ function ModelEditor({
             <Field
               label="适配器参数（JSON）"
               error={paramsError}
-              hint="ComfyUI 工作流写 workflow 与 bind；托管接口写 sizes、durations 等。留空使用适配器默认。"
+              hint="ComfyUI 写 workflow 和 bind；其他接口写 sizes、durations。留空用默认。"
             >
               <Textarea
                 className="font-mono text-xs"
@@ -975,7 +1054,7 @@ function ModelEditor({
             <Switch label="启用" checked={draft.enabled} onChange={(value) => set("enabled", value)} />
             <Switch
               label="作为独立工具提供给对话模型"
-              hint="对话模型默认只拿到预设选定的那个生成模型。打开后，这个模型会额外获得一个以它命名的工具，可以被点名调用。工具的参数表每轮都随请求发送，开得越多固定开销越大。"
+              hint="打开后，对话里可以点名用这个模型。默认只走预设里选中的那个。"
               checked={draft.agentTool}
               onChange={(value) => set("agentTool", value)}
             />
@@ -990,14 +1069,7 @@ function ModelEditor({
                   onChange={(event) => set("contextWindow", Number(event.target.value))}
                 />
               </Field>
-              <Field
-                label="最大输出"
-                hint={
-                  draft.librechatCompat
-                    ? "已开启「LibreChat 精简请求体」，token 上限字段不会发给网关；这里的值只用于本地预留上下文空间。"
-                    : undefined
-                }
-              >
+              <Field label="最大输出">
                 <Input
                   type="number"
                   value={draft.maxTokens}
@@ -1035,8 +1107,8 @@ function ModelEditor({
                 onChange={(value) => set("input", value ? ["text", "image"] : ["text"])}
               />
               <Switch
-                label="LibreChat 精简请求体"
-                hint="去掉 stream_options、store、token 上限与缓存字段，并把纯文本压成字符串；部分网关只接受这种形式。"
+                label="精简请求体"
+                hint="部分网关不接受完整字段，打开后只发它们认的那些。"
                 checked={draft.librechatCompat}
                 onChange={(value) => set("librechatCompat", value)}
               />

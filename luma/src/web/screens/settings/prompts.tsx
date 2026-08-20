@@ -52,7 +52,7 @@ export function PromptsSection({ reload }: { reload: () => Promise<void> }) {
 
   return (
     <>
-      <Section title="系统提示" hint="全局提示在前，工具提示在后。预设可以逐个覆盖这两段。">
+      <Section title="系统提示" hint="全局提示在前，工具提示在后。预设可以覆盖。">
         <SectionBody>
           <Field label="全局提示">
             <Textarea
@@ -80,7 +80,7 @@ export function PromptsSection({ reload }: { reload: () => Promise<void> }) {
             checked={prompts.titleEnabled}
             onChange={(value) => setPrompts({ ...prompts, titleEnabled: value })}
           />
-          <Field label="命名使用的模型" hint="小而快的模型足够，也省下主模型的上下文">
+          <Field label="命名使用的模型" hint="小而快的就行">
             <Select
               value={prompts.titleModelId}
               options={[

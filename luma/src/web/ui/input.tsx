@@ -14,15 +14,6 @@ export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return <textarea className={cn(field, "resize-y py-2 leading-relaxed", className)} {...props} />;
 }
 
-/** Native select, styled to match: a listbox is one place Radix buys us nothing. */
-export function NativeSelect({ className, children, ...props }: ComponentProps<"select">) {
-  return (
-    <select className={cn(field, "h-9 appearance-none pr-8", className)} {...props}>
-      {children}
-    </select>
-  );
-}
-
 /**
  * Label, control and message as one unit, so a form cannot drift into labels
  * that are not associated with anything.

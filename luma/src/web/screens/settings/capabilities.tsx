@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Capabilities, McpServer } from "@shared/types.ts";
+import type { Capabilities } from "@shared/types.ts";
+import { SEARCH_PROVIDERS } from "@shared/types.ts";
 import { api } from "../../api.ts";
 import {
   Badge,
@@ -28,17 +29,15 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
   const act = useAction();
   const toast = useToast();
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [tavilyKey, setTavilyKey] = useState("");
   const [embeddingKey, setEmbeddingKey] = useState("");
   const [reindexing, setReindexing] = useState(false);
   const [progress, setProgress] = useState<ReindexProgress | null>(null);
 
   useEffect(() => {
-    Promise.all([api.capabilities(), api.mcpServers()])
-      .then(([caps, mcp]) => {
+    api.capabilities()
+      .then((caps) => {
         setCapabilities(caps);
-        setMcpServers(mcp.items);
       })
       .catch((error: unknown) => toast(String(error), true));
   }, [toast]);
@@ -85,8 +84,24 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
       <Section
         title="联网搜索"
         actions={
-          <Badge tone={capabilities.web.hasTavilyKey ? "success" : "warning"}>
-            {capabilities.web.hasTavilyKey ? "已配置" : "缺少密钥"}
+          <Badge
+            tone={
+              capabilities.web.provider === "searxng"
+                ? capabilities.web.baseUrl
+                  ? "success"
+                  : "warning"
+                : capabilities.web.hasTavilyKey
+                  ? "success"
+                  : "warning"
+            }
+          >
+            {capabilities.web.provider === "searxng"
+              ? capabilities.web.baseUrl
+                ? "已配置实例"
+                : "缺少实例地址"
+              : capabilities.web.hasTavilyKey
+                ? "已配置"
+                : "缺少密钥"}
           </Badge>
         }
       >
@@ -96,6 +111,22 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
             checked={capabilities.web.enabled}
             onChange={(value) => void patch({ web: { enabled: value } })}
           />
+          <Field label="后端">
+            <Select
+              value={capabilities.web.provider}
+              options={SEARCH_PROVIDERS.map((item) => ({ value: item.id, label: item.label }))}
+              onChange={(value) => void patch({ web: { provider: value } })}
+            />
+          </Field>
+          {capabilities.web.provider === "searxng" ? (
+            <Field label="SearXNG 地址" hint="自托管实例的根地址，不需要密钥。">
+              <Input
+                defaultValue={capabilities.web.baseUrl}
+                placeholder="http://127.0.0.1:8080"
+                onBlur={(event) => void patch({ web: { baseUrl: event.target.value } })}
+              />
+            </Field>
+          ) : (
           <Field label="Tavily API Key">
             <div className="flex gap-2">
               <Input
@@ -127,6 +158,7 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
               </Button>
             </div>
           </Field>
+          )}
         </SectionBody>
       </Section>
 
@@ -146,9 +178,9 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
             <Select
               value={capabilities.files.mode}
               options={[
-                { value: "hybrid", label: "混合", hint: "语义 + 关键词，RRF 融合" },
-                { value: "semantic", label: "仅语义", hint: "只比对嵌入向量" },
-                { value: "keyword", label: "仅关键词", hint: "只走 FTS5 全文索引" },
+                { value: "hybrid", label: "混合", hint: "语义加关键词" },
+                { value: "semantic", label: "仅语义" },
+                { value: "keyword", label: "仅关键词" },
               ]}
               onChange={(value) => void patch({ files: { mode: value as Capabilities["files"]["mode"] } })}
             />
@@ -178,14 +210,14 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
                 onBlur={(event) => void patch({ embedding: { model: event.target.value } })}
               />
             </Field>
-            <Field label="切片大小" hint="按字符计。参考实现（LibreChat rag_api、Open WebUI）都在 1000–1500 之间。">
+            <Field label="切片大小" hint="按字符计，一般 1000–1500。">
               <Input
                 type="number"
                 defaultValue={capabilities.embedding.chunkSize}
                 onBlur={(event) => void patch({ embedding: { chunkSize: Number(event.target.value) } })}
               />
             </Field>
-            <Field label="切片重叠" hint="取切片大小的 10%–20%，避免答案正好落在边界上。">
+            <Field label="切片重叠" hint="大约切片大小的一成到两成。">
               <Input
                 type="number"
                 defaultValue={capabilities.embedding.chunkOverlap}
@@ -195,7 +227,7 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
           </div>
           <Field
             label="重建索引"
-            hint="切片参数只作用于新文件；已经索引过的文档要重建一次，才会按当前的切片大小与重叠重新切片和嵌入。"
+            hint="改切片只影响新文件。已经索引过的，要点下面重建。"
           >
             <div className="flex items-center gap-3">
               <Button variant="outline" disabled={reindexing} onClick={() => void reindexAll()}>
@@ -264,7 +296,7 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
                 onBlur={(event) => void patch({ memory: { tokenLimit: Number(event.target.value) } })}
               />
             </Field>
-            <Field label="单条字符上限" hint="只在写入时校验；已超出的旧条目仍可读，但要先删减才能再编辑。">
+            <Field label="单条字符上限">
               <Input
                 type="number"
                 defaultValue={capabilities.memory.charLimit}
@@ -272,7 +304,7 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
               />
             </Field>
           </div>
-          <Field label="建议键（逗号分隔）" hint="只是给模型的复用提示，它仍可按内容自建新键。">
+          <Field label="建议键（逗号分隔）" hint="给模型的起点，它仍可以自己起名。">
             <Input
               defaultValue={capabilities.memory.suggestedKeys.join(", ")}
               onBlur={(event) =>
@@ -290,52 +322,19 @@ export function CapabilitiesSection({ reload }: { reload: () => Promise<void> })
         </SectionBody>
       </Section>
 
-      <Section title="创作台" hint="图像与视频的手动控制台。生成模型会自动出现在这里。">
+      <Section title="创作台">
         <SectionBody>
           <Switch
             label="启用创作台页面"
             checked={capabilities.studio.enabled}
             onChange={(value) => void patch({ studio: { enabled: value } })}
           />
-          <Field
-            label="额外接入的 MCP 服务器"
-            hint="选中的服务器会单独为创作台连接，即使它对对话是停用的。留空表示跟随对话里启用的服务器。"
-          >
-            {mcpServers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">还没有 MCP 服务器。</p>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {mcpServers.map((server) => {
-                  const selected = capabilities.studio.servers;
-                  const on = selected.length === 0 ? server.enabled : selected.includes(server.id);
-                  return (
-                    <Switch
-                      key={server.id}
-                      label={server.title}
-                      checked={on}
-                      onChange={(value) => {
-                        const base = selected.length
-                          ? selected
-                          : mcpServers.filter((item) => item.enabled).map((item) => item.id);
-                        const next = value
-                          ? [...new Set([...base, server.id])]
-                          : base.filter((id) => id !== server.id);
-                        void patch({
-                          studio: { servers: next as never },
-                        } as Parameters<typeof api.updateCapabilities>[0]);
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </Field>
         </SectionBody>
       </Section>
 
       <Section
         title="代码工具"
-        hint="开启后，模型可以在下面的工作目录内读写文件甚至执行命令。仅在你清楚风险时开启。"
+        hint="模型可以在这个目录里读文件、改文件、跑命令。只在你清楚风险时打开。"
         actions={<Badge tone="warning">高权限</Badge>}
       >
         <SectionBody>

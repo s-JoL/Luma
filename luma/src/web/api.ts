@@ -252,19 +252,6 @@ export const api = {
   /** Where an asset came from. The `img_`/`vid_` prefix picks the route. */
   provenance: (assetId: string) =>
     request<Provenance>("GET", `/${assetId.startsWith("vid_") ? "videos" : "images"}/${assetId}/provenance`),
-  /** One of `imageId` or `videoId` comes back, depending on what the tool makes. */
-  studioRun: (serverId: string, tool: string, args: Record<string, unknown>) =>
-    request<{
-      imageId?: string;
-      videoId?: string;
-      mime: string;
-      width: number | null;
-      height: number | null;
-      durationMs?: number | null;
-      provider: string | null;
-      model: string | null;
-      elapsedMs: number;
-    }>("POST", "/studio/run", { serverId, tool, args }),
 
   memory: () => request<MemorySnapshot>("GET", "/memory"),
   setMemory: (key: string, value: string) => request<MemorySnapshot>("PUT", `/memory/${key}`, { value }),
@@ -305,7 +292,7 @@ export interface MemorySnapshot {
   suggestedKeys: string[];
 }
 
-export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
+type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
 export type RunEventHandler = (type: string, data: Record<string, unknown>, seq: number) => void;
 

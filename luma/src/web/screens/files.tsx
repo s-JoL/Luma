@@ -32,6 +32,7 @@ const KIND_LABEL: Record<FileKind, string> = { all: "全部", docs: "文档", im
 
 const STATUS: Record<string, { text: string; tone: "success" | "warning" | "danger" | "outline" }> = {
   ready: { text: "已索引", tone: "success" },
+  indexed: { text: "可检索", tone: "success" },
   pending: { text: "索引中", tone: "warning" },
   failed: { text: "失败", tone: "danger" },
   none: { text: "未索引", tone: "outline" },
@@ -164,7 +165,7 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
         }}
       >
         <PageBody>
-          <Section title="检索测试" hint="用一个真实问题验证 file_search 会取回哪些片段">
+          <Section title="在文件里搜" hint="搜你上传或生成过的文档">
             <SectionBody>
               <div className="flex gap-2">
                 <div className="relative flex-1">
@@ -172,14 +173,14 @@ export function Files({ onOpenRail }: { onOpenRail: () => void }) {
                   <Input
                     className="pl-8"
                     value={query}
-                    placeholder="输入问题，看看会检索到什么"
+                    placeholder="关键词或一句话"
                     onChange={(event) => setQuery(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") void search();
                     }}
                   />
                 </div>
-                <Button onClick={() => void search()}>检索</Button>
+                <Button onClick={() => void search()}>搜索</Button>
               </div>
               {hits?.length === 0 ? (
                 <p className="text-sm text-muted-foreground">没有命中任何片段。</p>

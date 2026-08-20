@@ -1,6 +1,6 @@
 /**
  * Profiles: the named bundle a conversation runs under — which models, which
- * tools, which MCP servers, which prompts (`08-generation.md §Profiles`).
+ * tools, which MCP servers, which prompts (`03-generation.md §Profiles`).
  *
  * A deployment with no profiles behaves exactly as it did before they existed,
  * so this page is additive: nothing here has to be filled in.
@@ -27,12 +27,12 @@ import {
 } from "../../ui.tsx";
 
 const CAPABILITIES: Array<{ key: keyof ProfileCapabilities; label: string; hint: string }> = [
-  { key: "generation", label: "图像与视频生成", hint: "允许对话模型自己发起生成" },
-  { key: "web", label: "联网搜索", hint: "需要在「能力」里配好 Tavily 密钥" },
-  { key: "files", label: "文件检索", hint: "检索你上传的文档" },
+  { key: "generation", label: "图像与视频生成", hint: "对话里可以自己画图、做视频" },
+  { key: "web", label: "联网搜索", hint: "先在「能力」里配好搜索" },
+  { key: "files", label: "文件检索", hint: "搜你上传的文档" },
   { key: "memory", label: "记忆", hint: "跨对话记住少量事实" },
-  { key: "skills", label: "技能", hint: "从 data/skills 目录加载" },
-  { key: "coding", label: "代码工具", hint: "在工作目录内读写、执行命令" },
+  { key: "skills", label: "技能", hint: "从 data/skills 加载" },
+  { key: "coding", label: "代码工具", hint: "在工作目录里读写、跑命令" },
 ];
 
 const BLANK: Profile = {
@@ -79,7 +79,7 @@ export function ProfilesSection({ reload }: { reload: () => Promise<void> }) {
     <>
       <Section
         title="对话预设"
-        hint="每个对话可以选一个预设：一次切换模型、能力、MCP 服务器和提示词。留空的字段跟随全局设置。"
+        hint="一次换模型、能力和工具。空着的项跟全局走。"
         actions={
           <Button size="sm" onClick={() => setEditing({ ...BLANK, sortOrder: profiles.length })}>
             <Plus />
@@ -151,7 +151,7 @@ export function ProfilesSection({ reload }: { reload: () => Promise<void> }) {
       {profiles.length ? (
         <Section title="默认预设">
           <SectionBody>
-            <Field label="新对话使用" hint="也可以在对话右上角随时切换">
+            <Field label="新对话使用">
               <Select
                 value={defaultProfileId}
                 options={[
@@ -221,7 +221,7 @@ function ProfileEditor({
       open
       onOpenChange={(open) => !open && onCancel()}
       title={isNew ? "新建预设" : `编辑 ${profile.name}`}
-      description="留空的字段跟随全局设置，所以只需要填这个预设真正要改的部分。"
+      description="只填这个预设要改的部分，其余跟全局走。"
       className="w-[min(44rem,calc(100vw-2rem))]"
       footer={
         <>
@@ -264,21 +264,21 @@ function ProfileEditor({
               onChange={(value) => set("chatModelId", value)}
             />
           </Field>
-          <Field label="图片模型" hint="绑定到 generate_image 工具">
+          <Field label="图片模型">
             <Select
               value={draft.imageModelId}
               options={pick("image", "text_to_image")}
               onChange={(value) => set("imageModelId", value)}
             />
           </Field>
-          <Field label="图像编辑模型" hint="绑定到 edit_image 工具；留空时，若图片模型本身支持 image_to_image 就用它">
+          <Field label="图像编辑模型" hint="留空则用上面那个，如果它本身能改图。">
             <Select
               value={draft.editModelId}
               options={pick("image", "image_to_image")}
               onChange={(value) => set("editModelId", value)}
             />
           </Field>
-          <Field label="视频模型" hint="绑定到 generate_video 工具">
+          <Field label="视频模型">
             <Select
               value={draft.videoModelId}
               options={pick("video")}
@@ -301,7 +301,7 @@ function ProfileEditor({
           </div>
         </Field>
 
-        <Field label="MCP 服务器" hint="不选表示跟随全局启用的那些">
+        <Field label="MCP 服务器" hint="不选就用全局已启用的那些">
           {servers.length === 0 ? (
             <p className="text-xs text-muted-foreground">还没有配置 MCP 服务器。</p>
           ) : (

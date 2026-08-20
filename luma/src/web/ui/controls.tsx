@@ -94,10 +94,13 @@ export function Select<T extends string>({
   align?: "start" | "center" | "end";
   disabled?: boolean;
 }) {
-  // An option list that offers no empty choice keeps the placeholder for an
-  // unset value, which is what an unconfigured model switcher should show.
+  // Always pass a string so the listbox stays controlled. An unset value with
+  // no empty option maps to the sentinel, paired with a disabled item below so
+  // the trigger can show the placeholder instead of flipping from uncontrolled
+  // to controlled when the first real value arrives.
   const offersNone = options.some((option) => option.value === "");
-  const current = value === "" && !offersNone ? undefined : encode(value);
+  const current = encode(value);
+  const showPlaceholderItem = value === "" && !offersNone;
 
   return (
     <SelectPrimitive.Root
@@ -132,6 +135,11 @@ export function Select<T extends string>({
             "rounded-lg border bg-popover p-1 shadow-xl data-[state=open]:animate-in-fast"
           }
         >
+          {showPlaceholderItem ? (
+            <SelectPrimitive.Item value={NONE} disabled className="hidden">
+              <SelectPrimitive.ItemText>{placeholder}</SelectPrimitive.ItemText>
+            </SelectPrimitive.Item>
+          ) : null}
           {options.map((option) => (
             <SelectPrimitive.Item
               key={option.value}

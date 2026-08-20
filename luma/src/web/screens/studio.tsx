@@ -1,12 +1,10 @@
 /**
  * Manual control surface for generation. The form is generated from the JSON
- * Schema the server sends for each tool — the generation adapters' schemas, plus
- * whatever MCP servers advertise — so a newly configured image model or server
+ * Schema the server sends for each model operation, so a newly configured backend
  * shows up with the right controls without any change here.
  *
- * Anything backed by a generation model goes through the job queue, so a video
- * that takes two minutes survives a reload and a phone locking its screen. MCP
- * tools have no job of their own and are still run inline.
+ * Everything goes through the job queue, so a video that takes two minutes
+ * survives a reload and a phone locking its screen.
  */
 import {
   ChevronDown,
@@ -55,22 +53,25 @@ const HIDDEN_FIELDS = new Set(["placement_key", "intent"]);
 
 /**
  * The operations, as tabs, in the order someone works in: draw something, change
- * it, then move it. `other` is here only because the type allows it; the server
- * does not send those to the studio.
+ * it, then move it.
  */
 const KIND_ORDER: Array<StudioTool["kind"]> = ["generate", "edit", "video"];
 const KIND_LABELS: Record<StudioTool["kind"], string> = {
   generate: "生成图片",
   edit: "编辑图片",
   video: "视频",
-  other: "其他",
 };
 const KIND_ACTIONS: Record<StudioTool["kind"], string> = {
   generate: "开始生成",
   edit: "开始编辑",
   video: "开始生成视频",
-  other: "运行",
 };
+
+/** Generate first. Within a kind, keep the server's order (preset bindings first). */
+function sortStudioTools(items: StudioTool[]) {
+  const kindRank: Record<StudioTool["kind"], number> = { generate: 0, edit: 1, video: 2 };
+  return [...items].sort((a, b) => kindRank[a.kind] - kindRank[b.kind]);
+}
 
 const FIELD_LABELS: Record<string, string> = {
   aspect_ratio: "画面比例",
@@ -172,14 +173,12 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           api.jobs({ status: "succeeded", limit: 60 }),
           loadGallery(0),
         ]);
-        setTools(catalogue.items);
+        const items = sortStudioTools(catalogue.items);
+        setTools(items);
         setEnabled(catalogue.enabled);
         setJobs([...running.items, ...queued.items]);
         setPast(done.items);
-        setToolKey(
-          (current) =>
-            current || (catalogue.items[0] ? `${catalogue.items[0].serverId}/${catalogue.items[0].name}` : ""),
-        );
+        setToolKey((current) => current || (items[0] ? `${items[0].serverId}/${items[0].name}` : ""));
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), true);
       }
@@ -368,51 +367,22 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
     // The click that starts a render is the gesture the permission prompt needs.
     askToNotify();
     try {
-      // A generation model has a job; an MCP tool is just a call.
-      if (tool.modelId) {
-        const params = prune(values);
-        const sources = [
-          ...(values[SOURCE_FIELD] ? [String(values[SOURCE_FIELD])] : []),
-          ...((values[EXTRA_SOURCES_FIELD] as string[] | undefined) ?? []),
-        ];
-        delete params[SOURCE_FIELD];
-        delete params[EXTRA_SOURCES_FIELD];
-        const job = await api.submitJob({
-          modelId: tool.modelId,
-          op: tool.op,
-          params,
-          sources,
-        });
-        upsertJob(job);
-        // Opened once, so the work is visibly somewhere; closing it stays closed.
-        setQueueOpen(true);
-        return;
-      }
-      const result = await api.studioRun(tool.serverId, tool.name, prune(values));
-      toast(`已生成 · ${formatDuration(result.elapsedMs)}`);
-      if (!result.imageId) return;
-      // An MCP tool answers in one call and has no job row, so the tile is built
-      // from what the call returned. The reload after it reads the library row
-      // and fills in the filename this cannot know.
-      setGallery((current) => [
-        {
-          id: result.imageId!,
-          assetId: result.imageId!,
-          kind: "image",
-          mime: result.mime,
-          width: result.width,
-          height: result.height,
-          provider: result.provider,
-          model: result.model,
-          name: null,
-          parents: [],
-          createdAt: Date.now(),
-          durationMs: null,
-          posterAssetId: null,
-        },
-        ...current,
-      ]);
-      setTotal((current) => current + 1);
+      const params = prune(values);
+      const sources = [
+        ...(values[SOURCE_FIELD] ? [String(values[SOURCE_FIELD])] : []),
+        ...((values[EXTRA_SOURCES_FIELD] as string[] | undefined) ?? []),
+      ];
+      delete params[SOURCE_FIELD];
+      delete params[EXTRA_SOURCES_FIELD];
+      const job = await api.submitJob({
+        modelId: tool.modelId,
+        op: tool.op,
+        params,
+        sources,
+      });
+      upsertJob(job);
+      // Opened once, so the work is visibly somewhere; closing it stays closed.
+      setQueueOpen(true);
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -488,7 +458,10 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
           <ChevronDown className={cn("size-3.5 transition-transform", queueOpen && "rotate-180")} />
         </Button>
       ) : null}
-      <span className="text-xs text-muted-foreground">{total} 张作品</span>
+      {/* The count is of everything the library holds, and that has included
+          video since the gallery started reading it. "张" counts pictures only,
+          so the measure word had to widen with the thing it measures. */}
+      <span className="text-xs text-muted-foreground">{total} 件作品</span>
     </header>
   );
 
@@ -652,13 +625,13 @@ export function Studio({ onOpenRail }: { onOpenRail: () => void }) {
               <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm select-none">
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open/manual:rotate-180" />
                 <span className="flex-1">高级</span>
-                <span className="text-xs text-muted-foreground">{manual.length} 项 · 仅手动</span>
+                <span className="text-xs text-muted-foreground">{manual.length} 项</span>
               </summary>
               <div className="flex flex-col gap-3 border-t px-3 py-3">{manual.map(control)}</div>
             </details>
           ) : null}
 
-          <Button variant="primary" size="lg" disabled={!canRun} onClick={() => void run()}>
+          <Button variant="primary" size="lg" data-testid="studio-submit" disabled={!canRun} onClick={() => void run()}>
             {busy ? <Spinner /> : <ImagePlus />}
             {KIND_ACTIONS[tool?.kind ?? "generate"]}
           </Button>
@@ -1107,21 +1080,22 @@ function SchemaField({
   }
 
   if (schema.type === "string") {
+    // Same rule as `describe`: a `description` is the model's copy, so a field
+    // that has a title has already addressed the reader and must not borrow it.
+    // The prompt field is where this bites — its description is the backend's
+    // prompting advice, several sentences of English aimed at a model.
+    const placeholder = schema.title ? undefined : schema.description?.slice(0, 60);
     return (
       <Field label={label} hint={hint}>
         {isMultiline(schema) ? (
           <Textarea
             rows={4}
             value={String(value ?? "")}
-            placeholder={schema.description?.slice(0, 60)}
+            placeholder={placeholder}
             onChange={(event) => onChange(event.target.value)}
           />
         ) : (
-          <Input
-            value={String(value ?? "")}
-            placeholder={schema.description?.slice(0, 60)}
-            onChange={(event) => onChange(event.target.value)}
-          />
+          <Input value={String(value ?? "")} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
         )}
       </Field>
     );
@@ -1358,7 +1332,7 @@ function summarize(tool: StudioTool) {
   };
   const references = properties[EXTRA_SOURCES_FIELD];
   return [
-    tool.modelId ? (tool.local ? "本地" : "托管") : "MCP 工具",
+    tool.local ? "本地" : "托管",
     choices(properties.aspect_ratio),
     choices(properties.resolution ?? properties.size),
     choices(properties.duration ?? properties.duration_seconds, " 秒"),
@@ -1375,8 +1349,8 @@ function summarize(tool: StudioTool) {
  * imperative, and about how to compose a call — "Copy an exact image_id from the
  * conversation". Its `title` is the same knob addressed to a person. So a field
  * with a title has already said its piece, and printing the model's copy beneath
- * it puts instructions for somebody else in front of the reader. An MCP tool
- * often has only a description, and there it is all there is to go on.
+ * it puts instructions for somebody else in front of the reader. A field with
+ * only a description still has that as the caption.
  */
 function describe(schema: JsonSchema) {
   const range =

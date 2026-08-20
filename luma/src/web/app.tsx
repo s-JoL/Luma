@@ -24,7 +24,9 @@ import {
   Input,
   Menu,
   MenuItem,
+  Modal,
   Sheet,
+  Spinner,
   ThemeToggle,
   useToast,
 } from "./ui.tsx";
@@ -81,31 +83,83 @@ function routePath(route: Route) {
 }
 
 export function App() {
+  const toast = useToast();
   const [ready, setReady] = useState(false);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [error, setError] = useState("");
+  /** The snapshot on screen, so a failed reload can tell a cold start from a refresh. */
+  const shown = useRef<Bootstrap | null>(null);
+  shown.current = bootstrap;
 
   const load = useCallback(async () => {
     try {
       setBootstrap(await api.bootstrap());
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
+      setError("");
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (caught instanceof ApiError && caught.status === 401) {
         token.clear();
         setBootstrap(null);
+        setError("");
+      } else if (shown.current) {
+        // Settings reload on every save. A snapshot that failed to refresh is
+        // stale, not gone, and tearing the workspace down over it would throw
+        // away whatever the reader was in the middle of.
+        toast(message, true);
       } else {
-        throw error;
+        setError(message);
       }
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   if (!ready) return <Empty className="h-full">正在加载…</Empty>;
+  if (error) return <Unreachable message={error} onRetry={load} />;
   if (!bootstrap) return <Login onDone={load} />;
   return <Workspace bootstrap={bootstrap} reload={load} />;
+}
+
+/**
+ * Nothing below this point works without the bootstrap snapshot, so a first
+ * load that failed has only the server's reason and a way to ask again. It is
+ * not the sign-in form: the token may be perfectly good and the server simply
+ * down, and offering a code to type would send the reader after the wrong fault.
+ */
+function Unreachable({ message, onRetry }: { message: string; onRetry: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="flex w-full max-w-sm flex-col gap-4 rounded-xl border bg-card p-6 shadow-sm">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2 text-lg font-semibold">
+            <Mark />
+            Luma
+          </div>
+          <p className="text-sm text-muted-foreground">连不上服务器，稍后再试一次。</p>
+        </div>
+        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {message}
+        </p>
+        <Button
+          variant="primary"
+          size="lg"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            await onRetry();
+            setBusy(false);
+          }}
+        >
+          {busy ? "重试中…" : "重试"}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function Login({ onDone }: { onDone: () => Promise<void> }) {
@@ -153,9 +207,7 @@ function Login({ onDone }: { onDone: () => Promise<void> }) {
             <Mark />
             Luma
           </div>
-          <p className="text-sm text-muted-foreground">
-            输入访问码以继续。首次启动时访问码会打印在服务端日志里。
-          </p>
+          <p className="text-sm text-muted-foreground">输入访问码进入。第一次启动时，访问码会打在服务器日志里。</p>
         </div>
         <Field error={error}>
           <Input
@@ -163,6 +215,7 @@ function Login({ onDone }: { onDone: () => Promise<void> }) {
             autoFocus
             type="password"
             placeholder="访问码"
+            data-testid="signin-code"
             onChange={(event) => setCode(event.target.value)}
           />
         </Field>
@@ -179,6 +232,7 @@ function Login({ onDone }: { onDone: () => Promise<void> }) {
           variant="primary"
           size="lg"
           type="submit"
+          data-testid="signin-submit"
           disabled={busy || !code.trim() || (needsTotp && totp.trim().length < 6)}
         >
           {busy ? "验证中…" : "进入"}
@@ -263,8 +317,11 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
   const [railOpen, setRailOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<ConversationSearchHit[]>([]);
+  const [searchError, setSearchError] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<ConversationSummary | null>(null);
   const { screen, conversationId: activeId } = route;
   const searching = query.trim().length > 0;
+  const showHistory = screen === "chat";
 
   const navigate = useCallback((next: Route, replace = false) => {
     setRoute(next);
@@ -280,6 +337,7 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
    */
   useEffect(() => {
     const text = query.trim();
+    setSearchError("");
     if (!text) {
       setHits([]);
       return;
@@ -289,7 +347,13 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
       void api
         .searchConversations(text, controller.signal)
         .then((result) => setHits(result.items))
-        .catch(() => undefined);
+        // The results on screen answer the previous keystroke, so a search that
+        // failed has to say so: leaving them up reads as "this is what matched".
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) return;
+          setHits([]);
+          setSearchError(error instanceof Error ? error.message : String(error));
+        });
     }, 180);
     return () => {
       clearTimeout(timer);
@@ -380,26 +444,49 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
           <Plus />
           新对话
         </Button>
-        <div className="relative">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            placeholder="搜索所有对话"
-            className="h-8 pl-8 text-sm"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        {showHistory ? (
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              placeholder="搜索所有对话"
+              className="h-8 pl-8 text-sm"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+        ) : lastChatId.current || conversations?.[0]?.id ? (
+          <Button
+            variant="ghost"
+            className="justify-start text-muted-foreground"
+            onClick={() =>
+              navigate({
+                screen: "chat",
+                conversationId: lastChatId.current || conversations?.[0]?.id || "",
+              })
+            }
+          >
+            <MessagesSquare />
+            回到对话
+          </Button>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {searching ? (
+        {!showHistory ? null : searchError ? (
+          <p className="px-3 py-6 text-center text-sm text-destructive">{searchError}</p>
+        ) : searching ? (
           <SearchResults
             hits={hits}
             onOpen={(hit) =>
               navigate({ screen: "chat", conversationId: hit.conversationId, focusSeq: hit.seq })
             }
           />
-        ) : conversations === null ? null : conversations.length === 0 ? (
+        ) : conversations === null ? (
+          <p className="flex items-center justify-center gap-2 px-3 py-6 text-sm text-muted-foreground">
+            <Spinner />
+            正在加载…
+          </p>
+        ) : conversations.length === 0 ? (
           <p className="px-3 py-6 text-center text-sm text-muted-foreground">还没有对话</p>
         ) : (
           groups.map(([label, items]) => (
@@ -430,7 +517,7 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
                         "group-hover:opacity-100 focus-visible:opacity-100",
                         active && "opacity-100",
                       )}
-                      onClick={() => void removeConversation(conversation.id)}
+                      onClick={() => setPendingDelete(conversation)}
                     >
                       <Trash2 />
                     </Button>
@@ -448,6 +535,7 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
             key={id}
             aria-current={screen === id ? "page" : undefined}
             title={label}
+            data-testid={`nav-${id}`}
             className={cn(
               "flex flex-1 flex-col items-center gap-1 rounded-md py-1.5 text-xs transition-colors",
               screen === id
@@ -479,6 +567,36 @@ function Workspace({ bootstrap, reload }: { bootstrap: Bootstrap; reload: () => 
       <Sheet open={railOpen} onOpenChange={setRailOpen} title="导航">
         {rail}
       </Sheet>
+
+      <Modal
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        title="删除对话"
+        description={
+          pendingDelete
+            ? `「${pendingDelete.title || "未命名对话"}」的转写会一并删掉，无法恢复。`
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPendingDelete(null)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const id = pendingDelete?.id;
+                setPendingDelete(null);
+                if (id) void removeConversation(id);
+              }}
+            >
+              删除
+            </Button>
+          </>
+        }
+      />
 
       <main className="flex min-w-0 flex-1 flex-col">
         {screen === "chat" ? (

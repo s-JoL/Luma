@@ -40,6 +40,9 @@ export function Memory({ onOpenRail }: { onOpenRail: () => void }) {
 
   const stored = new Map(snapshot.items.map((item) => [item.key, item]));
   const existingKeys = new Set([...stored.keys(), ...added, ...snapshot.suggestedKeys]);
+  // Stored keys first, then anything just added here, so a subject the model or
+  // the reader coined is never hidden behind the suggestions neither of them used.
+  const keys = [...existingKeys];
   const usage = snapshot.limit ? Math.min(100, (snapshot.tokens / snapshot.limit) * 100) : 0;
 
   /** Drops the draft so the field falls back to what the server now holds. */
@@ -74,15 +77,21 @@ export function Memory({ onOpenRail }: { onOpenRail: () => void }) {
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            这些条目会随每次请求注入系统提示。键由模型按内容自行命名，下面的空槽只是建议，单条上限{" "}
-            {snapshot.charLimit} 字符。
+            对话会带上这些条目。空槽是建议，模型也可以自己起名。单条最多 {snapshot.charLimit} 字。
           </p>
         </div>
 
-        {/* Stored keys first, then anything just added here, so a subject the
-            model or the reader coined is never hidden behind the suggestions
-            neither of them used. */}
-        {[...new Set([...snapshot.items.map((item) => item.key), ...added, ...snapshot.suggestedKeys])].map((key) => {
+        {keys.length === 0 ? (
+          <Section>
+            <SectionBody>
+              <p className="text-sm text-muted-foreground">
+                还没有任何条目。点右上角「新建条目」起一个键名，模型也会在对话里自己记下值得记的事。
+              </p>
+            </SectionBody>
+          </Section>
+        ) : null}
+
+        {keys.map((key) => {
           const item = stored.get(key);
           const value = drafts[key] ?? item?.value ?? "";
           const dirty = value !== (item?.value ?? "");

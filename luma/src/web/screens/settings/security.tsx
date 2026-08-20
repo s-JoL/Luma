@@ -53,7 +53,7 @@ export function SecuritySection() {
     <>
       <Section
         title="访问码"
-        hint="访问码是第一道门。修改后，除当前设备外的所有会话都会失效。"
+        hint="改完之后，除了这台设备，其他登录都会失效。"
         actions={<Badge tone={state.overTls ? "success" : "warning"}>{state.overTls ? "HTTPS" : "明文 HTTP"}</Badge>}
       >
         <SectionBody>
@@ -84,7 +84,7 @@ export function SecuritySection() {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            至少 12 位。这是整个互联网都能猜的一道门，越长越好，建议用密码管理器生成。
+            至少 12 位。越长越好。
           </p>
           {state.overTls ? null : (
             <p className="text-xs text-muted-foreground">
@@ -252,7 +252,7 @@ export function SecuritySection() {
         <SectionBody>
           <p className="text-xs text-muted-foreground">
             推荐用 Cloudflare Tunnel 暴露：本机不开任何公网端口，由 Cloudflare Access 先做一层身份校验，Luma
-            的访问码与两步验证是第二层。具体命令见仓库里的 docs/06-remote-access.md。
+            的访问码与两步验证是第二层。隧道与 LUMA_TRUST_PROXY 见 docs/01-architecture.md。
           </p>
           <p className="text-xs text-muted-foreground">
             走反向代理时，把 LUMA_TRUST_PROXY 设为 1：登录限速才能按真实来源 IP

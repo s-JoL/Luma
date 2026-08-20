@@ -25,14 +25,14 @@ type Tab = "providers" | "models" | "tools" | "profiles" | "capabilities" | "pro
  * model are both "something that does work when asked", and which of them is
  * implemented as a subprocess is our business rather than the reader's.
  */
-const TABS: Array<{ id: Tab; label: string; icon: typeof Boxes; hint: string }> = [
-  { id: "providers", label: "提供方", icon: Plug, hint: "端点与密钥，对话与生成共用" },
-  { id: "models", label: "对话模型", icon: Boxes, hint: "对话跑在哪些模型上" },
-  { id: "tools", label: "工具与后端", icon: Server, hint: "生成后端与 MCP 服务器，以及各自对 agent 开放到什么程度" },
-  { id: "profiles", label: "预设", icon: Sparkles, hint: "每个对话可选的模型与能力组合" },
-  { id: "capabilities", label: "能力", icon: SlidersHorizontal, hint: "联网、文件、记忆、创作台、代码" },
-  { id: "prompts", label: "提示词", icon: Terminal, hint: "系统提示与标题生成" },
-  { id: "security", label: "安全", icon: KeyRound, hint: "访问码、两步验证、设备" },
+const TABS: Array<{ id: Tab; label: string; icon: typeof Boxes }> = [
+  { id: "providers", label: "提供方", icon: Plug },
+  { id: "models", label: "对话模型", icon: Boxes },
+  { id: "tools", label: "工具与后端", icon: Server },
+  { id: "profiles", label: "预设", icon: Sparkles },
+  { id: "capabilities", label: "能力", icon: SlidersHorizontal },
+  { id: "prompts", label: "提示词", icon: Terminal },
+  { id: "security", label: "安全", icon: KeyRound },
 ];
 
 /** Where a link to a page that no longer exists should land instead. */
@@ -67,8 +67,6 @@ export function Settings({
     window.history.replaceState({}, "", `/settings/${id}`);
   };
 
-  const active = TABS.find((item) => item.id === tab)!;
-
   return (
     <>
       <PageHeader title="设置" onOpenRail={onOpenRail}>
@@ -97,7 +95,6 @@ export function Settings({
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
-            <p className="text-sm text-muted-foreground">{active.hint}</p>
             {tab === "providers" ? <ProvidersSection reload={reload} /> : null}
             {tab === "models" ? <ModelsSection reload={reload} /> : null}
             {tab === "tools" ? <ToolsSection reload={reload} /> : null}

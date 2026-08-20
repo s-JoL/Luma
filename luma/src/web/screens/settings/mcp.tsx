@@ -67,7 +67,7 @@ export function McpSection({ reload }: { reload: () => Promise<void> }) {
     <>
       <Section
         title="MCP 服务器"
-        hint="本地子进程或远程 HTTP 服务器，它声明的工具会直接进入对话模型的工具列表。"
+        hint="给对话加第三方工具。本地进程或远程 HTTP 都行。"
         actions={
           <div className="flex gap-2">
             <Button size="sm" onClick={() => void act(() => api.reconnectMcp(), "已重连").then(refresh)}>
@@ -96,7 +96,7 @@ export function McpSection({ reload }: { reload: () => Promise<void> }) {
         {servers.length === 0 ? (
           <SectionBody>
             <p className="text-sm text-muted-foreground">
-              还没有 MCP 服务器。生成不需要它：图片与视频后端就在这一页的上面。
+              还没有 MCP 服务器。
             </p>
           </SectionBody>
         ) : null}
@@ -113,9 +113,7 @@ export function McpSection({ reload }: { reload: () => Promise<void> }) {
                       {state?.connected ? `${state.tools.length} 个工具` : "未连接"}
                     </Badge>
                   ) : (
-                    <Badge tone="outline">
-                      {state?.studioOnly && state.connected ? "仅创作台" : "已停用"}
-                    </Badge>
+                    <Badge tone="outline">已停用</Badge>
                   )}
                 </div>
                 <div className="truncate font-mono text-xs text-muted-foreground">
@@ -243,7 +241,7 @@ function McpEditor({
         </Field>
         {remote ? (
           <>
-            <Field label="URL" hint="先按 Streamable HTTP 连接，失败再回退到已废弃的 HTTP+SSE。">
+            <Field label="URL" hint="先走 Streamable HTTP，不行再试旧的 SSE。">
               <Input
                 className="font-mono text-xs"
                 placeholder="https://mcp.example.com/mcp"
@@ -253,7 +251,7 @@ function McpEditor({
             </Field>
             <Field
               label="请求头（KEY=VALUE，每行一个）"
-              hint={`值里可以写 ${"${变量}"}，例如 ${"${OPENROUTER_API_KEY}"} 引用同名提供方已存的密钥，令牌就不必明文留在这里。`}
+              hint={`可以用 ${"${OPENROUTER_API_KEY}"} 引用已存的密钥。`}
             >
               <Textarea
                 className="font-mono text-xs"
@@ -284,7 +282,7 @@ function McpEditor({
             </Field>
             <Field
               label="环境变量（KEY=VALUE，每行一个）"
-              hint={`可引用 ${"${AIGC_ROOT}"}、${"${PROJECT_ROOT}"}、${"${NODE_EXE}"} 与每个提供方的 ${"${<提供方>_API_KEY}"}。`}
+              hint={`可引用已存密钥，以及 ${"${AIGC_ROOT}"}、${"${PROJECT_ROOT}"}、${"${NODE_EXE}"}。`}
             >
               <Textarea
                 className="font-mono text-xs"

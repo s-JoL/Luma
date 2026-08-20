@@ -28,6 +28,7 @@ import {
   toolCallIds,
   turnText,
   type Citation,
+  type FilePart,
   type Turn,
 } from "../messages.ts";
 import {
@@ -87,6 +88,12 @@ export function Chat({
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Creating a conversation navigates onto its id, which re-runs the load
+   * effect. Without this flag that effect would drop the optimistic user turn
+   * and flash the empty state while the first run is already in flight.
+   */
+  const seedingRef = useRef(false);
   /** The turn currently being streamed, so a late fetch can tell if it is stale. */
   const liveTurnRef = useRef<LiveTurn | null>(null);
   const stickyRef = useRef(true);
@@ -197,21 +204,24 @@ export function Chat({
   );
 
   useEffect(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    if (!seedingRef.current) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setLive(null);
+      setPendingUser(null);
+      setRunning(false);
+      messageSeqRef.current = -1;
+      messagesRef.current = [];
+      setMessages([]);
+    }
     openConversationRef.current = conversationId;
-    setLive(null);
-    setPendingUser(null);
-    setRunning(false);
     setEditingSeq(null);
-    messageSeqRef.current = -1;
-    messagesRef.current = [];
-    setMessages([]);
     if (!conversationId) {
       setTitle("");
       setProfileId(bootstrap.defaultProfileId);
       return;
     }
+    if (seedingRef.current) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -390,32 +400,36 @@ export function Chat({
     // Sending is the gesture a permission prompt needs behind it.
     askToNotify();
     stickyRef.current = true;
+    setPendingUser({
+      id: "pending",
+      seq: -1,
+      role: "user",
+      parts: [
+        { kind: "text", text },
+        ...attachments.map((file) =>
+          file.mime.startsWith("image/")
+            ? ({ kind: "image", imageId: file.id } as const)
+            : ({ kind: "file", fileId: file.id, name: file.name, bytes: file.bytes } as const),
+        ),
+      ],
+    });
+    setDraft("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    const attachmentIds = attachments.map((file) => file.id);
+    setAttachments([]);
     try {
       if (!targetId) {
+        seedingRef.current = true;
         const created = await api.createConversation(modelId, profileId);
         targetId = created.id;
         await onConversationCreated(created.id);
+        seedingRef.current = false;
       }
-
-      setPendingUser({
-        id: "pending",
-        seq: -1,
-        role: "user",
-        parts: [
-          { kind: "text", text },
-          ...attachments
-            .filter((file) => file.mime.startsWith("image/"))
-            .map((file) => ({ kind: "image" as const, imageId: file.id })),
-        ],
-      });
-      setDraft("");
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
-      const attachmentIds = attachments.map((file) => file.id);
-      setAttachments([]);
 
       const run = await api.startRun(targetId, text, attachmentIds, modelId);
       await follow(targetId, run.runId, run.seq, new Set());
     } catch (error) {
+      seedingRef.current = false;
       setRunning(false);
       setPendingUser(null);
       toast(error instanceof Error ? error.message : String(error), true);
@@ -593,7 +607,7 @@ export function Chat({
         {visibleTurns.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
             <p className="text-lg font-medium">开始一段新对话</p>
-            <p className="max-w-md text-sm text-muted-foreground">可以联网搜索、检索你的文件、生成和编辑图片与视频。</p>
+            <p className="max-w-md text-sm text-muted-foreground">搜网页、查文件、画图、做视频，都行。</p>
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6" ref={watchContent}>
@@ -669,6 +683,7 @@ export function Chat({
             ref={textareaRef}
             rows={1}
             value={draft}
+            data-testid="composer-input"
             enterKeyHint={touch ? "enter" : "send"}
             className="max-h-55 min-h-9 resize-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0"
             placeholder={touch ? "输入消息，点右下角发送" : "输入消息，Enter 发送，Shift+Enter 换行"}
@@ -717,7 +732,13 @@ export function Chat({
             </Tooltip>
             {uploading ? <Spinner className="text-muted-foreground" /> : null}
             <span className="flex-1" />
-            <Button variant="primary" size="sm" disabled={!draft.trim() || running} onClick={() => void send()}>
+            <Button
+              variant="primary"
+              size="sm"
+              data-testid="composer-send"
+              disabled={!draft.trim() || running}
+              onClick={() => void send()}
+            >
               {running ? <Spinner /> : <CornerDownLeft />}
               {running ? "生成中" : "发送"}
             </Button>
@@ -790,9 +811,10 @@ const TurnView = memo(function TurnView({
 }) {
   if (turn.role === "user") {
     const images = turn.parts.filter((part) => part.kind === "image");
+    const documents = turn.parts.filter((part) => part.kind === "file");
     const text = turnText(turn);
     return (
-      <div className="group flex flex-col items-end gap-2" data-seq={turn.seq}>
+      <div className="group flex flex-col items-end gap-2" data-seq={turn.seq} data-testid="turn">
         {images.length ? (
           <div className="flex flex-wrap justify-end gap-2">
             {images.map((part) => (
@@ -805,6 +827,13 @@ const TurnView = memo(function TurnView({
                 decoding="async"
                 onClick={() => onImageClick(`/v1/images/${part.imageId}`)}
               />
+            ))}
+          </div>
+        ) : null}
+        {documents.length ? (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {documents.map((part) => (
+              <FileChip key={part.fileId} part={part} />
             ))}
           </div>
         ) : null}
@@ -836,7 +865,7 @@ const TurnView = memo(function TurnView({
 
   const empty = turn.parts.length === 0;
   return (
-    <div className="group flex flex-col gap-3" data-seq={turn.seq}>
+    <div className="group flex flex-col gap-3" data-seq={turn.seq} data-testid="turn">
       {turn.parts.map((part, index) => {
         if (part.kind === "text") {
           return (
@@ -881,6 +910,9 @@ const TurnView = memo(function TurnView({
             />
           );
         }
+        if (part.kind === "file") {
+          return <FileChip key={index} part={part} />;
+        }
         if (part.kind === "approval") {
           return <ApprovalView key={part.approval.id} approval={part.approval} />;
         }
@@ -923,6 +955,24 @@ const TurnView = memo(function TurnView({
     </div>
   );
 });
+
+/**
+ * An attachment with nothing to preview. The name is all there is to recognise
+ * it by, and the link is the only way back to the bytes the turn was given.
+ */
+function FileChip({ part }: { part: FilePart }) {
+  return (
+    <a
+      className="flex w-fit items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-xs transition-colors hover:bg-secondary/70"
+      href={`/v1/files/${part.fileId}/content`}
+      download={part.name}
+    >
+      <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="max-w-50 truncate">{part.name}</span>
+      {part.bytes ? <span className="text-muted-foreground">{formatBytes(part.bytes)}</span> : null}
+    </a>
+  );
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);

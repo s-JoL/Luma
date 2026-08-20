@@ -2,11 +2,8 @@
  * Everything that does work on the model's behalf, on one page: the generation
  * backends this server drives itself, and the MCP servers it connects to.
  *
- * They were on different pages because they are implemented differently — one is
- * an adapter and a job queue, the other is a subprocess speaking a protocol — but
- * that is our distinction, not the reader's. From here both answer the same three
- * questions: is it reachable, what does it take, and is the agent allowed to use
- * it or is it for the studio only.
+ * Generation models appear in the studio and, if the profile allows, as agent
+ * tools. MCP is only for the agent.
  */
 import { GenerationSection } from "./models.tsx";
 import { McpSection } from "./mcp.tsx";
