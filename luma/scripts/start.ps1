@@ -2,6 +2,7 @@
 # front of it, logs and pids under run/. Safe to run when it is already up —
 # it stops the previous instance first.
 #
+#   default    start the tunnel and listen on the LAN as well
 #   -Local     skip the tunnel, listen on 127.0.0.1 only
 #   -Port      override the listening port (the tunnel expects the default)
 #   -NoComfy   leave the image backend alone
@@ -24,6 +25,7 @@ if (-not (Test-Path (Join-Path $node "node.exe"))) {
 
 $env:PATH = "$node;$env:PATH"
 $env:LUMA_PORT = "$Port"
+$env:LUMA_HOST = if ($Local) { "127.0.0.1" } else { "0.0.0.0" }
 # Behind the tunnel every request arrives from 127.0.0.1, so without this the
 # per-client lockout has a single bucket the whole internet shares — and the
 # security screen cannot tell an HTTPS connection from a plaintext one. Declared
@@ -86,6 +88,12 @@ if (-not $ready) {
   exit 1
 }
 Write-Host "Luma is up on http://127.0.0.1:$Port (pid $($process.Id))"
+if (-not $Local) {
+  Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
+    Select-Object -ExpandProperty IPAddress -Unique |
+    ForEach-Object { Write-Host "LAN address: http://${_}:$Port" }
+}
 
 if (-not $Local) {
   $exe = Join-Path $tunnelDir "cloudflared.exe"
