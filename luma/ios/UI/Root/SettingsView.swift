@@ -16,9 +16,6 @@ struct SettingsView: View {
                     NavigationLink { ModelsSettingsView() } label: {
                         Label("对话模型", systemImage: "cpu")
                     }
-                    NavigationLink { ProfilesSettingsView() } label: {
-                        Label("预设", systemImage: "sparkles")
-                    }
                     NavigationLink { CapabilitiesSettingsView() } label: {
                         Label("能力", systemImage: "switch.2")
                     }
@@ -210,7 +207,7 @@ private struct ModelsSettingsView: View {
                     .disabled(busy || !model.isUsable)
                 }
             } footer: {
-                Text("点一下设为默认。标了星的会出现在输入框上。")
+                Text("点一下设为默认。新对话从这里开始。")
             }
         }
         .listStyle(.insetGrouped)
@@ -225,164 +222,6 @@ private struct ModelsSettingsView: View {
         defer { busy = false }
         do {
             try await app.api.send(.setDefaultModel(id))
-            await app.load()
-        } catch let error as APIError {
-            app.handle(error)
-        } catch {}
-    }
-}
-
-// MARK: - Profiles
-
-private struct ProfilesSettingsView: View {
-    @Environment(AppModel.self) private var app
-    @State private var busy = false
-
-    var body: some View {
-        List {
-            Section {
-                ForEach(app.bootstrap?.profiles ?? []) { profile in
-                    NavigationLink {
-                        ProfileDetailView(profile: profile)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(profile.name)
-                                Text(summary(profile))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            if profile.id.raw == app.bootstrap?.defaultProfileId {
-                                Badge(text: "默认", tone: .brand)
-                            }
-                        }
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if profile.id.raw != app.bootstrap?.defaultProfileId {
-                            Button("设为默认") { Task { await setDefault(profile.id.raw) } }
-                        }
-                    }
-                }
-            } footer: {
-                Text("新对话用默认预设。点进去可以改它绑的生图、改图和视频模型。")
-            }
-        }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color.bg)
-        .navigationTitle("预设")
-        .navigationBarTitleDisplayMode(.inline)
-        .disabled(busy)
-    }
-
-    private func summary(_ profile: Profile) -> String {
-        let names = [
-            name(profile.imageModelId),
-            name(profile.editModelId),
-            name(profile.videoModelId),
-        ].filter { !$0.isEmpty }
-        return names.isEmpty ? "还没绑生成模型" : names.joined(separator: " · ")
-    }
-
-    private func name(_ id: String) -> String {
-        guard !id.isEmpty else { return "" }
-        return app.bootstrap?.models.first { $0.id.raw == id }?.name ?? id
-    }
-
-    private func setDefault(_ id: String) async {
-        busy = true
-        defer { busy = false }
-        do {
-            _ = try await app.api.send(.setDefaultProfile(id), as: DefaultProfileReply.self)
-            await app.load()
-        } catch let error as APIError {
-            app.handle(error)
-        } catch {}
-    }
-}
-
-private struct ProfileDetailView: View {
-    @Environment(AppModel.self) private var app
-    let profile: Profile
-    @State private var busy = false
-
-    private var live: Profile {
-        app.bootstrap?.profiles.first { $0.id == profile.id } ?? profile
-    }
-
-    var body: some View {
-        List {
-            Section {
-                picker("对话", value: live.chatModelId, kinds: [.chat]) { await patch(chatModelId: $0) }
-                picker("生图", value: live.imageModelId, kinds: [.image]) { await patch(imageModelId: $0) }
-                picker("改图", value: live.editModelId, kinds: [.image]) { await patch(editModelId: $0) }
-                picker("视频", value: live.videoModelId, kinds: [.video]) { await patch(videoModelId: $0) }
-            } footer: {
-                Text("对话里画图、改图、做视频会走这里绑的模型。")
-            }
-            if live.id.raw != app.bootstrap?.defaultProfileId {
-                Section {
-                    Button("设为默认预设") { Task { await setDefault() } }
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color.bg)
-        .navigationTitle(live.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .disabled(busy)
-    }
-
-    private func picker(
-        _ title: String,
-        value: String,
-        kinds: [ModelKind],
-        _ set: @escaping (String) async -> Void
-    ) -> some View {
-        let options = (app.bootstrap?.models ?? []).filter { kinds.contains($0.kind) && $0.enabled }
-        return Picker(title, selection: Binding(
-            get: { value },
-            set: { next in Task { await set(next) } }
-        )) {
-            Text("未指定").tag("")
-            ForEach(options) { model in
-                Text(model.name).tag(model.id.raw)
-            }
-        }
-    }
-
-    private func patch(
-        chatModelId: String? = nil,
-        imageModelId: String? = nil,
-        editModelId: String? = nil,
-        videoModelId: String? = nil
-    ) async {
-        busy = true
-        defer { busy = false }
-        do {
-            _ = try await app.api.send(
-                .patchProfile(profile.id.raw, ProfilePatch(
-                    chatModelId: chatModelId,
-                    imageModelId: imageModelId,
-                    editModelId: editModelId,
-                    videoModelId: videoModelId
-                )),
-                as: Profile.self
-            )
-            await app.load()
-        } catch let error as APIError {
-            app.handle(error)
-        } catch {}
-    }
-
-    private func setDefault() async {
-        busy = true
-        defer { busy = false }
-        do {
-            _ = try await app.api.send(.setDefaultProfile(live.id.raw), as: DefaultProfileReply.self)
             await app.load()
         } catch let error as APIError {
             app.handle(error)

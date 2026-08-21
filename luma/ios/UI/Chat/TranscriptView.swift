@@ -168,7 +168,6 @@ struct TranscriptView: View {
                     isRunning: store.isRunning,
                     uploading: uploading,
                     modelName: modelName(store),
-                    profileName: profileName(store),
                     send: { submit(store) },
                     stop: { Task { await store.stop() } },
                     pickModel: { showingModels = true },
@@ -408,13 +407,6 @@ struct TranscriptView: View {
     private func modelName(_ store: TranscriptStore) -> String? {
         guard let id = store.modelId, let bootstrap = app.bootstrap else { return nil }
         return bootstrap.model(id)?.name
-    }
-
-    private func profileName(_ store: TranscriptStore) -> String? {
-        let profiles = app.bootstrap?.profiles ?? []
-        guard !profiles.isEmpty else { return nil }
-        if store.profileId.isEmpty { return "默认设置" }
-        return profiles.first { $0.id.raw == store.profileId }?.name ?? store.profileId
     }
 
     /// A rewind, so it behaves like sending rather than like editing a field:
@@ -755,21 +747,6 @@ private struct ModelPickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if let profiles = app.bootstrap?.profiles, !profiles.isEmpty {
-                    Section {
-                        profileRow(id: "", name: "默认设置", hint: "用全局模型与能力")
-                        ForEach(profiles) { profile in
-                            profileRow(
-                                id: profile.id.raw,
-                                name: profile.name,
-                                hint: describe(profile)
-                            )
-                        }
-                    } header: {
-                        Text("预设").textCase(nil)
-                    }
-                }
-
                 Section {
                     ForEach(app.bootstrap?.pinnedChatModels ?? []) { model in
                         row(model)
@@ -777,7 +754,7 @@ private struct ModelPickerSheet: View {
                 } header: {
                     Text("固定").textCase(nil)
                 } footer: {
-                    Text("换模型和预设只影响下一次回答，上面已经写好的不会重写。")
+                    Text("换模型只影响下一次回答，上面已经写好的不会重写。")
                 }
 
                 // An aggregator exposes hundreds and a person reaches for four,
@@ -794,7 +771,7 @@ private struct ModelPickerSheet: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color.bg)
-            .navigationTitle("模型和预设")
+            .navigationTitle("模型")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -804,41 +781,6 @@ private struct ModelPickerSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-    }
-
-    private func profileRow(id: String, name: String, hint: String) -> some View {
-        let selected = store.profileId == id
-        return Button {
-            Task { await store.setProfile(id) }
-        } label: {
-            HStack(spacing: Space.md) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).foregroundStyle(Color.fg).lineLimit(1)
-                    if !hint.isEmpty {
-                        Text(hint)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: Space.sm)
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.brand)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-    }
-
-    private func describe(_ profile: Profile) -> String {
-        let names = [
-            app.bootstrap?.models.first { $0.id.raw == profile.chatModelId }?.name,
-            app.bootstrap?.models.first { $0.id.raw == profile.imageModelId }?.name,
-        ].compactMap { $0 }.filter { !$0.isEmpty }
-        return names.joined(separator: " · ")
     }
 
     private func row(_ model: ModelSpec) -> some View {

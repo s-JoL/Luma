@@ -74,6 +74,6 @@ adapter 的东西」，不是用来绕过已经有的生成层。
 那是一次有意的重写，不是顺手能补的。
 
 **ComfyUI 这条路只在装了它的机器上验证过。** 它是 adapter，没有特例；但
-`scripts/comfy.ps1` 只覆盖 Windows 的 Desktop 安装，POSIX 上要人自己开。预设
+`scripts/comfy.ps1` 只覆盖 Windows 的 Desktop 安装，POSIX 上要人自己开。默认
 绑着本地模型而 8188 没人听时，生成会失败并说清楚该启动什么，不再是一句
 `fetch failed`。

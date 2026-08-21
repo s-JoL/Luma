@@ -32,9 +32,9 @@ export function isRunnable(spec: ModelSpec) {
 }
 
 /**
- * Studio catalogue tie-breaker when the default preset has no binding for this
+ * Studio catalogue tie-breaker when no default backend is bound for this
  * kind: a keyed hosted backend, then local Comfy, then a hosted row that still
- * needs a key. Profile bindings outrank this in `/studio/tools`.
+ * needs a key. The default generation slots outrank this in `/studio/tools`.
  */
 export function studioPriority(spec: ModelSpec): number {
   if (spec.apiMode !== "comfy-workflow" && spec.configured !== false) return 0;

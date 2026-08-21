@@ -88,8 +88,8 @@ export class Db {
       );
     }
     const conversations = this.columns("conversations");
-    if (conversations.size && !conversations.has("profile_id")) {
-      this.exec("ALTER TABLE conversations ADD COLUMN profile_id TEXT NOT NULL DEFAULT ''");
+    if (conversations.size && conversations.has("profile_id")) {
+      this.exec("ALTER TABLE conversations DROP COLUMN profile_id");
     }
     // A provider can declare how it presents its credential. Null is `bearer`,
     // so every row written before this behaves exactly as it did.

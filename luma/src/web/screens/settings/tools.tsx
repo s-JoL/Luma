@@ -2,8 +2,8 @@
  * Everything that does work on the model's behalf, on one page: the generation
  * backends this server drives itself, and the MCP servers it connects to.
  *
- * Generation models appear in the studio and, if the profile allows, as agent
- * tools. MCP is only for the agent.
+ * Generation models appear in the studio and, if flagged, as agent tools.
+ * MCP is only for the agent.
  */
 import { GenerationSection } from "./models.tsx";
 import { McpSection } from "./mcp.tsx";

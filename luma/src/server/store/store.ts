@@ -18,8 +18,6 @@ import type {
   ModelInput,
   ModelKind,
   ModelSpec,
-  Profile,
-  ProfileInput,
   Provider,
   ProviderAuthConfig,
   ProviderInput,
@@ -313,7 +311,7 @@ export class Store {
     this.db.run("DELETE FROM models WHERE id = ?", id);
   }
 
-  private nextSortOrder(table: "providers" | "models" | "mcp_servers" | "profiles") {
+  private nextSortOrder(table: "providers" | "models" | "mcp_servers") {
     const row = this.db.get<{ next: number }>(
       `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM ${table}`,
     );
@@ -378,15 +376,14 @@ export class Store {
 
   // ----------------------------------------------------------- conversations
 
-  createConversation(modelId: string, title = "New conversation", profileId = "") {
+  createConversation(modelId: string, title = "New conversation") {
     const id = newId("conv");
     const now = Date.now();
     this.db.run(
-      "INSERT INTO conversations(id, title, model_id, profile_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+      "INSERT INTO conversations(id, title, model_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
       id,
       title,
       modelId,
-      profileId,
       now,
       now,
     );
@@ -400,20 +397,10 @@ export class Store {
       id: String(row.id),
       title: String(row.title),
       modelId: String(row.model_id),
-      profileId: String(row.profile_id ?? ""),
       archived: bool(row.archived),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
-  }
-
-  setConversationProfile(id: string, profileId: string) {
-    this.db.run(
-      "UPDATE conversations SET profile_id = ?, updated_at = ? WHERE id = ?",
-      profileId,
-      Date.now(),
-      id,
-    );
   }
 
   listConversations(limit: number, before?: number) {
@@ -430,7 +417,6 @@ export class Store {
       id: String(row.id),
       title: String(row.title),
       modelId: String(row.model_id),
-      profileId: String(row.profile_id ?? ""),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
       messageCount: Number(row.message_count),
@@ -1516,56 +1502,6 @@ export class Store {
     return row ? toVideoAsset(row) : undefined;
   }
 
-  // ---------------------------------------------------------------- profiles
-
-  listProfiles(): Profile[] {
-    return this.db.all("SELECT * FROM profiles ORDER BY sort_order, name").map(toProfile);
-  }
-
-  getProfile(id: string): Profile | undefined {
-    const row = this.db.get("SELECT * FROM profiles WHERE id = ?", id);
-    return row ? toProfile(row) : undefined;
-  }
-
-  upsertProfile(input: ProfileInput & { id: string }) {
-    const now = Date.now();
-    const existing = this.getProfile(input.id);
-    const sortOrder = input.sortOrder ?? existing?.sortOrder ?? this.nextSortOrder("profiles");
-    this.db.run(
-      `INSERT INTO profiles(id, name, chat_model_id, image_model_id, edit_model_id, video_model_id,
-                            capabilities, mcp_servers, global_prompt, tool_prompt, sort_order,
-                            created_at, updated_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name, chat_model_id = excluded.chat_model_id,
-         image_model_id = excluded.image_model_id, edit_model_id = excluded.edit_model_id,
-         video_model_id = excluded.video_model_id, capabilities = excluded.capabilities,
-         mcp_servers = excluded.mcp_servers, global_prompt = excluded.global_prompt,
-         tool_prompt = excluded.tool_prompt, sort_order = excluded.sort_order,
-         updated_at = excluded.updated_at`,
-      input.id,
-      input.name,
-      input.chatModelId ?? existing?.chatModelId ?? "",
-      input.imageModelId ?? existing?.imageModelId ?? "",
-      input.editModelId ?? existing?.editModelId ?? "",
-      input.videoModelId ?? existing?.videoModelId ?? "",
-      JSON.stringify(input.capabilities ?? existing?.capabilities ?? {}),
-      JSON.stringify(input.mcpServers ?? existing?.mcpServers ?? []),
-      input.globalPrompt ?? existing?.globalPrompt ?? "",
-      input.toolPrompt ?? existing?.toolPrompt ?? "",
-      sortOrder,
-      existing?.createdAt ?? now,
-      now,
-    );
-    return this.getProfile(input.id)!;
-  }
-
-  deleteProfile(id: string) {
-    this.db.run("DELETE FROM profiles WHERE id = ?", id);
-    // Conversations fall back to the default profile rather than to nothing.
-    this.db.run("UPDATE conversations SET profile_id = '' WHERE profile_id = ?", id);
-  }
-
   // -------------------------------------------------------------------- jobs
 
   createJob(
@@ -1810,33 +1746,6 @@ function toVideoAsset(row: Record<string, unknown>): VideoAsset {
     model: (row.model as string | null) ?? null,
     parentImageIds: json<string[]>(row.parent_image_ids, []),
     createdAt: Number(row.created_at),
-  };
-}
-
-/** Missing keys mean "not offered", so an older row does not silently gain tools. */
-function toProfile(row: Record<string, unknown>): Profile {
-  const capabilities = json<Partial<Profile["capabilities"]>>(row.capabilities, {});
-  return {
-    id: String(row.id),
-    name: String(row.name),
-    chatModelId: String(row.chat_model_id ?? ""),
-    imageModelId: String(row.image_model_id ?? ""),
-    editModelId: String(row.edit_model_id ?? ""),
-    videoModelId: String(row.video_model_id ?? ""),
-    capabilities: {
-      memory: capabilities.memory ?? false,
-      files: capabilities.files ?? false,
-      web: capabilities.web ?? false,
-      coding: capabilities.coding ?? false,
-      skills: capabilities.skills ?? false,
-      generation: capabilities.generation ?? false,
-    },
-    mcpServers: json<string[]>(row.mcp_servers, []),
-    globalPrompt: String(row.global_prompt ?? ""),
-    toolPrompt: String(row.tool_prompt ?? ""),
-    sortOrder: Number(row.sort_order ?? 0),
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
   };
 }
 

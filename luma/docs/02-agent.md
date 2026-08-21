@@ -13,7 +13,7 @@ pi 提供：循环本身、session 树、`buildSessionContext`、压缩算法、
 加载、bash 工具、LLM 流式。
 
 Luma 提供：`Runtime`（开跑 / 停 / 续 / 转向）、把树投影成 `messages`、审批、
-profile 门控、标题、把历史图片收成 id、按窗口修剪、把 provider 错误写成能读的
+标题、把历史图片收成 id、按窗口修剪、把 provider 错误写成能读的
 中文、装配工具。循环本身通过 `LoopFactory`（默认 `createPiLoop`）接到 Runtime。
 Runtime 交给 factory 的是 `LoopStart`（系统提示、模型、工具、历史、流式、审批
 门），订阅的是 `LoopEvent`。pi 的构造选项、队列策略和 `AgentEvent` 留在
@@ -24,7 +24,7 @@ Runtime 交给 factory 的是 `LoopStart`（系统提示、模型、工具、历
 入口：`POST /v1/conversations/:id/runs`。一个对话同时只能有一个 run。
 `Idempotency-Key` 让超时重试不会开第二次。
 
-1. 解析模型与 profile（能力、提示词、生成模型、MCP 过滤）。
+1. 解析模型（能力、提示词、生成默认后端）。
 2. 附件：图成本轮多模态 part + 持久 `image_ref`；非图进文件库并可检索。
 3. 拼系统提示（全局 / 工具 + 记忆 / 文件清单 / 搜索 / skills 目录）。
 4. 按固定顺序装配工具（顺序稳定是为了 prompt cache）：文件检索、联网搜索、
@@ -75,8 +75,7 @@ Runtime 交给 factory 的是 `LoopStart`（系统提示、模型、工具、历
 
 ## 工具从哪来
 
-`Runtime.start` 里按开关 push，没有中央注册表。部署能力 AND profile 布尔值。
-profile 不能发明部署关掉的能力。skills 没有部署开关，只看 profile（或没有
-profile）。MCP 看已连接且启用的服务器，profile 可再按 id 过滤。
+`Runtime.start` 里按开关 push，没有中央注册表。部署能力决定工具在不在。
+skills 没有部署开关，有 `data/skills` 就有。MCP 看已连接且启用的服务器。
 
 详见 `04-capabilities.md` 和 `03-generation.md`。

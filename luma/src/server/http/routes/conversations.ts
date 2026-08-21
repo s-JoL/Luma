@@ -41,20 +41,12 @@ export function conversationRoutes(services: Services) {
   });
 
   app.post("/conversations", async (context) => {
-    const body = await readJson<{ modelId: string; title: string; profileId: string }>(context);
-    const asked = typeof body.profileId === "string" ? body.profileId : config.defaultProfileId();
-    // A deleted profile must not pin a conversation to nothing.
-    const profile = asked ? store.getProfile(asked) : undefined;
-    // The profile names a chat model, so the order is: what the client asked
-    // for, the profile's, then the global default (`03-generation.md §Profiles`).
-    const wanted = body.modelId || profile?.chatModelId || "";
+    const body = await readJson<{ modelId: string; title: string }>(context);
+    const wanted = typeof body.modelId === "string" ? body.modelId : "";
     const spec = wanted ? store.getModel(wanted) : undefined;
     const modelId = spec?.enabled && spec.configured ? wanted : config.defaultModelId();
     if (!modelId) return fail(context, 422, "no_model", "Configure a model before starting a conversation");
-    return context.json(
-      store.createConversation(modelId, body.title || "New conversation", profile?.id ?? ""),
-      201,
-    );
+    return context.json(store.createConversation(modelId, body.title || "New conversation"), 201);
   });
 
   /**
@@ -84,15 +76,11 @@ export function conversationRoutes(services: Services) {
   app.patch("/conversations/:id", async (context) => {
     const id = context.req.param("id");
     if (!store.getConversation(id)) return fail(context, 404, "not_found", "Conversation not found");
-    const body = await readJson<{ title: string; modelId: string; profileId: string }>(context);
+    const body = await readJson<{ title: string; modelId: string }>(context);
     if (typeof body.title === "string" && body.title.trim()) store.setConversationTitle(id, body.title.trim());
     if (body.modelId) {
       const spec = store.getModel(body.modelId);
       if (spec?.enabled && spec.configured) store.setConversationModel(id, body.modelId);
-    }
-    // An empty string is how a client goes back to the plain global settings.
-    if (typeof body.profileId === "string" && (!body.profileId || store.getProfile(body.profileId))) {
-      store.setConversationProfile(id, body.profileId);
     }
     return context.json(store.getConversation(id));
   });

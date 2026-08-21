@@ -1,10 +1,10 @@
 /**
  * Row ids derived from a name someone typed.
  *
- * Providers, models and profiles all let a person name the thing and then need a
- * key for it, and all three arrived at the same rules independently: lowercase,
+ * Providers and models all let a person name the thing and then need a
+ * key for it, and both arrived at the same rules independently: lowercase,
  * runs of anything unusable collapsed to a single hyphen, no hyphen on either
- * end. Three copies of that is three chances for two of them to drift, which
+ * end. Two copies of that is two chances for them to drift, which
  * matters because an id is what every other row points at.
  *
  * The fallback exists because a name can be entirely punctuation or entirely

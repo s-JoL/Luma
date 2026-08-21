@@ -21,7 +21,6 @@ struct ComposerView: View {
     let isRunning: Bool
     var uploading = false
     let modelName: String?
-    var profileName: String?
     let send: () -> Void
     let stop: () -> Void
     var pickModel: (() -> Void)?
@@ -125,22 +124,6 @@ struct ComposerView: View {
             .disabled(attach == nil || uploading)
             .accessibilityLabel("添加附件")
             .accessibilityIdentifier("composer.attach")
-
-            if let profileName {
-                Button {
-                    pickModel?()
-                } label: {
-                    Text(profileName)
-                        .lineLimit(1)
-                        .font(.caption)
-                        .foregroundStyle(Color.mutedFg)
-                        .padding(.horizontal, Space.sm)
-                        .frame(height: 28)
-                        .background(Color.secondaryFill.opacity(0.7), in: Capsule())
-                }
-                .frame(minHeight: 44)
-                .accessibilityLabel("切换预设，当前 \(profileName)")
-            }
 
             if let modelName {
                 Button {

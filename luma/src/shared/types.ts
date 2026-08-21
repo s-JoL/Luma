@@ -135,7 +135,7 @@ export interface ModelSpec {
   pinned: boolean;
   /**
    * Generation only: offer this model to the agent as a tool of its own, beside
-   * the profile's default one. Off by default because every tool's schema rides
+   * the default generation tools. Off by default because every tool's schema rides
    * along in each request, so a catalogue of near-identical drawing tools costs
    * tokens on every turn and leaves the model choosing between equivalents.
    */
@@ -367,8 +367,6 @@ export interface ConversationSummary {
   id: string;
   title: string;
   modelId: string;
-  /** Empty means the default profile, so nothing has to be migrated. */
-  profileId: string;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -621,49 +619,14 @@ export interface Provenance {
   };
 }
 
-/** Which capabilities a profile offers. Their configuration stays deployment-wide. */
-export interface ProfileCapabilities {
-  memory: boolean;
-  files: boolean;
-  web: boolean;
-  coding: boolean;
-  skills: boolean;
-  generation: boolean;
-}
-
-/**
- * The named bundle a conversation runs under: which models, which tools, which
- * MCP servers, which prompts. Choosing a model used to change the LLM and
- * nothing else.
- */
-export interface Profile {
-  id: string;
-  name: string;
-  chatModelId: string;
-  imageModelId: string;
-  /** Empty means edits go to `imageModelId` when it supports them. */
-  editModelId: string;
-  videoModelId: string;
-  capabilities: ProfileCapabilities;
-  /** MCP server ids. Empty means the deployment's own enabled set. */
-  mcpServers: string[];
-  /** Empty falls back to the deployment prompts. */
-  globalPrompt: string;
-  toolPrompt: string;
-  sortOrder: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export type ProfileInput = Partial<Omit<Profile, "createdAt" | "updatedAt">> & { name: string };
-
 export interface Bootstrap {
   version: string;
   models: ModelSpec[];
   providers: Provider[];
   defaultModelId: string;
-  profiles: Profile[];
-  defaultProfileId: string;
+  defaultImageModelId: string;
+  defaultEditModelId: string;
+  defaultVideoModelId: string;
   capabilities: Capabilities;
   mcp: McpStatus[];
   prompts: PromptSettings;

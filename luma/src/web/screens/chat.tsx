@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Approval, Bootstrap, FileRecord, Profile, StoredMessage } from "@shared/types.ts";
+import type { Approval, Bootstrap, FileRecord, StoredMessage } from "@shared/types.ts";
 import { isChatKind } from "@shared/types.ts";
 import { api, followRun } from "../api.ts";
 import { askToNotify, notifyFinished } from "../notify.ts";
@@ -80,8 +80,6 @@ export function Chat({
   const [zoom, setZoom] = useState("");
   const [title, setTitle] = useState("");
   const [modelId, setModelId] = useState(bootstrap.defaultModelId);
-  const [profileId, setProfileId] = useState(bootstrap.defaultProfileId);
-  /** Phone-only sheet for the two pickers the header cannot fit. */
   const [picking, setPicking] = useState(false);
   const [editingSeq, setEditingSeq] = useState<number | null>(null);
 
@@ -120,7 +118,6 @@ export function Chat({
     return pinned.length ? pinned : chatModels;
   }, [chatModels]);
   const current = bootstrap.models.find((model) => model.id === modelId);
-  const profile = bootstrap.profiles.find((item) => item.id === profileId);
 
   const syncMessages = useCallback(async (id: string, incremental: boolean) => {
     const from = incremental ? messageSeqRef.current : -1;
@@ -218,7 +215,7 @@ export function Chat({
     setEditingSeq(null);
     if (!conversationId) {
       setTitle("");
-      setProfileId(bootstrap.defaultProfileId);
+      setModelId(bootstrap.defaultModelId);
       return;
     }
     if (seedingRef.current) return;
@@ -232,7 +229,6 @@ export function Chat({
         if (cancelled) return;
         setTitle(summary.title);
         setModelId(summary.modelId);
-        setProfileId(summary.profileId);
         if (summary.activeRun) {
           void follow(
             conversationId,
@@ -248,7 +244,7 @@ export function Chat({
     return () => {
       cancelled = true;
     };
-  }, [bootstrap.defaultProfileId, conversationId, follow, syncMessages, toast]);
+  }, [bootstrap.defaultModelId, conversationId, follow, syncMessages, toast]);
 
   /**
    * A phone can be asleep long enough for the stream loop to give up, and it
@@ -420,7 +416,7 @@ export function Chat({
     try {
       if (!targetId) {
         seedingRef.current = true;
-        const created = await api.createConversation(modelId, profileId);
+        const created = await api.createConversation(modelId);
         targetId = created.id;
         await onConversationCreated(created.id);
         seedingRef.current = false;
@@ -496,8 +492,8 @@ export function Chat({
   const canAct = Boolean(conversationId) && !running && !pendingUser && !live;
 
   // What the reader can actually count on this turn, named rather than implied.
-  // Generation is a model question, not a settings flag: a profile's image model
-  // is what decides whether pictures are on the table.
+  // Generation is a model question, not a settings flag: a configured image
+  // model is what decides whether pictures are on the table.
   const generates = bootstrap.models.some(
     (model) => (model.kind === "image" || model.kind === "video") && model.enabled && model.configured,
   );
@@ -521,38 +517,10 @@ export function Chat({
     })),
   ];
 
-  const chooseProfile = async (next: string) => {
-    setProfileId(next);
-    const chat = bootstrap.profiles.find((item) => item.id === next)?.chatModelId;
-    if (chat && bootstrap.models.some((model) => model.id === chat && model.enabled)) setModelId(chat);
-    if (conversationId) await api.setConversationProfile(conversationId, next).catch(() => undefined);
-  };
-
   const chooseModel = async (next: string) => {
     setModelId(next);
     if (conversationId) await api.setConversationModel(conversationId, next).catch(() => undefined);
   };
-
-  // Rendered both in the header and, on a phone, inside the sheet below, which
-  // is why the width comes from the caller.
-  const profileSelect = (className: string) =>
-    bootstrap.profiles.length ? (
-      <Select
-        value={profileId}
-        className={className}
-        placeholder="默认设置"
-        triggerLabel={profile?.name ?? "默认设置"}
-        options={[
-          { value: "", label: "默认设置", hint: "使用全局模型与能力" },
-          ...bootstrap.profiles.map((item) => ({
-            value: item.id,
-            label: item.name,
-            hint: describeProfile(item, bootstrap),
-          })),
-        ]}
-        onChange={(next) => void chooseProfile(next)}
-      />
-    ) : null;
 
   const modelSelect = (className: string) => (
     <Select
@@ -572,17 +540,12 @@ export function Chat({
         </Button>
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium md:text-base">{title || "新对话"}</h1>
 
-        {/* On a phone the two pickers would leave the title a few characters
-            wide, so there they move behind one button. */}
-        <div className="hidden items-center gap-2 sm:flex">
-          {profileSelect("h-8 max-w-40 text-sm")}
-          {modelSelect("h-8 max-w-44 text-sm")}
-        </div>
+        <div className="hidden items-center gap-2 sm:flex">{modelSelect("h-8 max-w-44 text-sm")}</div>
         <Button
           variant="ghost"
           size="icon"
           className="sm:hidden"
-          aria-label="本次对话的模型与预设"
+          aria-label="本次对话的模型"
           onClick={() => setPicking(true)}
         >
           <SlidersHorizontal />
@@ -751,10 +714,7 @@ export function Chat({
       </div>
 
       <Modal open={picking} onOpenChange={setPicking} title="本次对话" description="只影响这个对话">
-        <div className="flex flex-col gap-4">
-          {bootstrap.profiles.length ? <Field label="预设">{profileSelect("w-full")}</Field> : null}
-          <Field label="模型">{modelSelect("w-full")}</Field>
-        </div>
+        <Field label="模型">{modelSelect("w-full")}</Field>
       </Modal>
 
       {zoom ? (
@@ -767,24 +727,6 @@ export function Chat({
     </>
   );
 }
-
-/** What picking this profile actually changes, in one line under its name. */
-function describeProfile(profile: Profile, bootstrap: Bootstrap) {
-  const model = bootstrap.models.find((item) => item.id === profile.chatModelId);
-  const on = Object.entries(profile.capabilities)
-    .filter(([, enabled]) => enabled)
-    .map(([key]) => CAPABILITY_LABELS[key] ?? key);
-  return [model?.name, on.join("·")].filter(Boolean).join(" · ");
-}
-
-const CAPABILITY_LABELS: Record<string, string> = {
-  memory: "记忆",
-  files: "文件",
-  web: "联网",
-  coding: "编码",
-  skills: "技能",
-  generation: "生成",
-};
 
 const TurnView = memo(function TurnView({
   turn,

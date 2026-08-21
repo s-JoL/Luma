@@ -21,7 +21,6 @@ import { conversationRoutes } from "./routes/conversations.ts";
 import { fileRoutes } from "./routes/files.ts";
 import { jobRoutes } from "./routes/jobs.ts";
 import { memoryRoutes } from "./routes/memory.ts";
-import { profileRoutes } from "./routes/profiles.ts";
 import { securityRoutes } from "./routes/security.ts";
 import { settingsRoutes } from "./routes/settings.ts";
 import { studioRoutes } from "./routes/studio.ts";
@@ -102,13 +101,15 @@ export function createApp(services: Services) {
 
   guarded.get("/bootstrap", (context) => {
     const capabilities = services.config.capabilities();
+    const generation = services.config.generationDefaults();
     const bootstrap: Bootstrap = {
       version: VERSION,
       models: services.store.listModels(),
       providers: services.store.listProviders(),
       defaultModelId: services.config.defaultModelId(),
-      profiles: services.store.listProfiles(),
-      defaultProfileId: services.config.defaultProfileId(),
+      defaultImageModelId: generation.imageModelId,
+      defaultEditModelId: generation.editModelId,
+      defaultVideoModelId: generation.videoModelId,
       capabilities,
       mcp: services.mcp.status(),
       prompts: services.config.prompts(),
@@ -125,7 +126,6 @@ export function createApp(services: Services) {
   guarded.route("/", memoryRoutes(services));
   guarded.route("/", studioRoutes(services));
   guarded.route("/", jobRoutes(services));
-  guarded.route("/", profileRoutes(services));
 
   api.route("/", guarded);
   app.route("/v1", api);

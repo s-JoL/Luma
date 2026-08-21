@@ -207,21 +207,27 @@ export class Config {
     return this.defaultModelId();
   }
 
-  /**
-   * Empty is a real answer: a deployment with no chosen default behaves exactly
-   * as it did before profiles existed, however many profiles are stored. There
-   * is deliberately no fall back to the first one — a profile gates
-   * capabilities, so creating a "画图" preset would otherwise take the coding
-   * tools away from every conversation that never asked for it.
-   */
-  defaultProfileId(): string {
-    const stored = this.store.getSetting<string>("defaultProfileId", "");
-    return stored && this.store.getProfile(stored) ? stored : "";
+  generationDefaults(): { imageModelId: string; editModelId: string; videoModelId: string } {
+    const stored = this.store.getSetting<Partial<{ imageModelId: string; editModelId: string; videoModelId: string }>>(
+      "generationDefaults",
+      {},
+    );
+    return {
+      imageModelId: stored.imageModelId ?? "",
+      editModelId: stored.editModelId ?? "",
+      videoModelId: stored.videoModelId ?? "",
+    };
   }
 
-  setDefaultProfileId(id: string) {
-    this.store.setSetting("defaultProfileId", id);
-    return this.defaultProfileId();
+  setGenerationDefaults(input: Partial<{ imageModelId: string; editModelId: string; videoModelId: string }>) {
+    const current = this.generationDefaults();
+    const next = {
+      imageModelId: input.imageModelId ?? current.imageModelId,
+      editModelId: input.editModelId ?? current.editModelId,
+      videoModelId: input.videoModelId ?? current.videoModelId,
+    };
+    this.store.setSetting("generationDefaults", next);
+    return next;
   }
 }
 

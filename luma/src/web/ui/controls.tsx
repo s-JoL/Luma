@@ -72,7 +72,7 @@ const decode = (value: string) => (value === NONE ? "" : value);
 /**
  * A listbox that can show two lines per option and be styled on every platform,
  * which a native `<select>` cannot. Used where the choice carries a subtitle —
- * a model with its provider, a profile with what it turns on.
+ * a model with its provider.
  */
 export function Select<T extends string>({
   value,

@@ -20,7 +20,6 @@ final class TranscriptStore {
 
     private(set) var title: String = ""
     private(set) var modelId: ModelId?
-    private(set) var profileId: String = ""
     private(set) var isLoading = false
     private(set) var isPagingBack = false
     private(set) var hasMoreHistory = false
@@ -111,7 +110,6 @@ final class TranscriptStore {
             let conversation = try await detail
             title = conversation.title
             modelId = conversation.modelId
-            profileId = conversation.profileId
 
             let messages = try await page
             apply(messages, replacing: true)
@@ -377,29 +375,6 @@ final class TranscriptStore {
             app?.handle(failure)
         } catch {
             modelId = previous
-        }
-    }
-
-    func setProfile(_ next: String) async {
-        let previous = profileId
-        let previousModel = modelId
-        profileId = next
-        let chat = app?.bootstrap?.profiles.first { $0.id.raw == next }?.chatModelId ?? ""
-        let chatId = ModelId(chat)
-        let chatUsable = app?.bootstrap?.models.contains { $0.id == chatId && $0.enabled } == true
-        if chatUsable { modelId = chatId }
-        do {
-            _ = try await api.send(
-                .setConversationProfile(id, profileId: next, modelId: chatUsable ? chatId : nil),
-                as: ConversationSummary.self
-            )
-        } catch let failure as APIError {
-            profileId = previous
-            modelId = previousModel
-            app?.handle(failure)
-        } catch {
-            profileId = previous
-            modelId = previousModel
         }
     }
 

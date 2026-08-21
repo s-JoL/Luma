@@ -52,7 +52,7 @@ export function PromptsSection({ reload }: { reload: () => Promise<void> }) {
 
   return (
     <>
-      <Section title="系统提示" hint="全局提示在前，工具提示在后。预设可以覆盖。">
+      <Section title="系统提示" hint="全局提示在前，工具提示在后。">
         <SectionBody>
           <Field label="全局提示">
             <Textarea

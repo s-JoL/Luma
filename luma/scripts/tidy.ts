@@ -63,4 +63,4 @@ const count = (table: string) =>
   Number((remaining.prepare(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c);
 
 console.log(`removed ${doomed.length} files (${(bytes / 1024 / 1024).toFixed(1)} MB) from ${DATA}`);
-console.log(`kept ${count("files")} documents, ${count("memories")} memories, ${count("profiles")} profiles`);
+console.log(`kept ${count("files")} documents, ${count("memories")} memories`);

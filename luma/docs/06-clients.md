@@ -15,7 +15,7 @@
 | 创作台 | `/studio` | schema 表单、job 队列、砌体图库（图+视频）、血缘 |
 | 文件 | `/files` | 图书馆、笔记、检索、预览 |
 | 记忆 | `/memory` | key/value、token 预算 |
-| 设置 | `/settings/…` | 供应商、对话模型、生成后端与 MCP、profile、能力、提示词、安全 |
+| 设置 | `/settings/…` | 供应商、对话模型、生成后端与 MCP、能力、提示词、安全 |
 
 `api.ts`：Bearer + cookie；SSE 失败两次改长轮询；`followRun` / `watchJob`。
 对话地址放在 URL 里，避免移动浏览器杀后台后丢掉当前会话。
@@ -50,10 +50,10 @@ SSE 要按**字节**解析，不能用 `bytes.lines`。Foundation 的 `AsyncLine
 | 栏 | 做什么 |
 |---|---|
 | 对话 | 访问码（及 TOTP）登录、列表、流式转写、工具块、引用、审批、编辑自己那条消息、composer（相册/文件附件）、断线时的连接提示 |
-| 创作台 | `/studio/tools` 出表单，默认选预设绑定的模型，`POST /jobs` + job SSE，图库磁贴 |
+| 创作台 | `/studio/tools` 出表单，默认选设置里绑的生成后端，`POST /jobs` + job SSE，图库磁贴 |
 | 文件 | 同一套 `files` 行：筛选、检索、笔记、上传、缩略图 |
 | 记忆 | `/memory` 快照、编辑、token 预算 |
-| 设置 | 提供方密钥、默认对话模型、预设（对话/生图/改图/视频绑定）、能力开关、提示词；MCP 状态与重连；安全（访问码、TOTP 登记/关闭、踢设备）；bootstrap 快照 |
+| 设置 | 提供方密钥、默认对话模型、默认生图/改图/视频后端、能力开关、提示词；MCP 状态与重连；安全（访问码、TOTP 登记/关闭、踢设备）；bootstrap 快照 |
 
 视频在三处都能播（转写、图库、文件库），走同一个组件。`AVURLAsset` 收不了
 `URLRequest`，所以 token 通过 `AVURLAssetHTTPHeaderFieldsKey` 传；播放器还要盯
@@ -62,7 +62,7 @@ SSE 要按**字节**解析，不能用 `bytes.lines`。Foundation 的 `AsyncLine
 安全那几个写操作要 step-up：失败回 `step_up_required` / `bad_step_up` 时就地再问
 一次访问码，并把用过的那个清掉。
 
-密钥只提交，不回读。加提供方、模型、MCP 用网页。创作表单由服务端 schema 渲染，工具顺序跟 `/studio/tools`（预设绑定优先）。新 adapter 不应迫使 App 发版。
+密钥只提交，不回读。加提供方、模型、MCP 用网页。创作表单由服务端 schema 渲染，工具顺序跟 `/studio/tools`（默认后端优先）。新 adapter 不应迫使 App 发版。
 
 `Luma.xcodeproj` 由 `project.yml` 生成、不入版本控制：XcodeGen 把目录展开成一条条
 文件引用，所以新增文件之后要跑 `xcodegen generate`，否则它根本不参与编译。

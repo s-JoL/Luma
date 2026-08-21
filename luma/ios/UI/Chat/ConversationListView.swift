@@ -212,8 +212,7 @@ struct ConversationListView: View {
     private func newConversation() async {
         do {
             let created = try await store.create(
-                modelId: app.bootstrap?.defaultModelId,
-                profileId: app.bootstrap?.defaultProfileId
+                modelId: app.bootstrap?.defaultModelId
             )
             open(created.id)
         } catch let error as APIError {

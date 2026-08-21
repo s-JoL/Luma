@@ -28,7 +28,7 @@ export interface GenerationToolOptions {
   jobs: Jobs;
   store: Store;
   conversationId: string;
-  /** Models the conversation's profile resolved to, if any. */
+  /** Models the generation defaults resolved to, if any. */
   image?: ModelSpec;
   edit?: ModelSpec;
   video?: ModelSpec;

@@ -248,21 +248,16 @@ async function generationModel(): Promise<ModelRow> {
 }
 
 /**
- * The row `generate_image` is bound to, resolved the way `resolveProfile` does:
- * the default preset's binding when it is runnable, otherwise a keyed hosted
- * backend ahead of local Comfy. Asking "is any backend up" was not the same
- * question — a reachable hosted row let the check run against a preset pinned to
- * a ComfyUI that was not started, and the agent's failure was reported as ours.
+ * The row `generate_image` is bound to, resolved the way `resolveGeneration` does:
+ * the default image slot when it is runnable, otherwise a keyed hosted backend
+ * ahead of local Comfy. Asking "is any backend up" was not the same question —
+ * a reachable hosted row let the check run against a default pinned to a
+ * ComfyUI that was not started, and the agent's failure was reported as ours.
  */
 async function agentImageModel(): Promise<ModelRow | undefined> {
   const candidates = await generationCandidates();
-  const boot = await call<{
-    defaultProfileId?: string;
-    profiles?: Array<{ id: string; imageModelId?: string }>;
-  }>("GET", "/bootstrap");
-  const profiles = boot.body.profiles ?? [];
-  const profile = profiles.find((item) => item.id === boot.body.defaultProfileId) ?? profiles[0];
-  const pinned = candidates.find((model) => model.id === profile?.imageModelId);
+  const boot = await call<{ defaultImageModelId?: string }>("GET", "/bootstrap");
+  const pinned = candidates.find((model) => model.id === boot.body.defaultImageModelId);
   if (pinned) return pinned;
   return (
     candidates.find((model) => (model.apiMode ?? "") !== "comfy-workflow") ??
@@ -530,8 +525,8 @@ await check("bootstrap exposes what a cold client needs", async () => {
       embedding: { hasKey: boolean };
     };
     mcp: Array<{ id: string; enabled: boolean; connected: boolean }>;
-    profiles: Array<{ id: string }>;
     defaultModelId: string;
+    defaultImageModelId: string;
   }>("GET", "/bootstrap");
   assert(reply.status === 200, `status ${reply.status}`);
   const configured = reply.body.models.filter((model) => model.configured);
@@ -548,7 +543,6 @@ await check("bootstrap exposes what a cold client needs", async () => {
     "no image model, so the studio and the image tools would both be empty",
   );
   assert(Array.isArray(reply.body.mcp), "mcp status missing");
-  assert(Array.isArray(reply.body.profiles), "profiles missing");
   assert(reply.body.capabilities.memory && reply.body.capabilities.web, "capabilities missing");
   assert(reply.body.capabilities.web.hasTavilyKey === hasTavily, "tavily key flag not reported consistently");
   assert(reply.body.capabilities.embedding.hasKey === hasEmbedding, "embedding key flag not reported consistently");
@@ -1069,58 +1063,28 @@ await check("settings changes take effect on the next run", async () => {
   return "capability toggle honoured, restored afterwards";
 });
 
-await check("a profile pins its chat model and gates its tools", async () => {
-  const catalogue = await call<{ items: ModelRow[]; defaultModelId: string }>("GET", "/models");
-  const chat = catalogue.body.items.filter((model) => model.enabled && model.configured && kindOf(model) === "chat");
-  assert(chat.length, "no chat model to pin");
-  // A model other than the global default, when there is one, so pinning is
-  // visible rather than a coincidence.
-  const pinned = chat.find((model) => model.id !== catalogue.body.defaultModelId) ?? chat[0]!;
-
-  // The preset also overrides the global prompt, and not only to cover that
-  // field: the shipped persona is written for adult fiction, and a gateway in
-  // front of some models answers it with `finish_reason: content_filter` before
-  // any of this check's subject matter is reached. What is being tested is the
-  // binding and the gate, so the persona is replaced with something no upstream
-  // filter has an opinion about.
-  const created = await call<{ id: string; chatModelId: string }>("POST", "/profiles", {
-    name: `E2E 无工具 ${Date.now()}`,
-    chatModelId: pinned.id,
-    globalPrompt: "You are a concise assistant. Answer in one short sentence.",
-    capabilities: { memory: false, files: false, web: false, coding: false, skills: false, generation: false },
+await check("generation defaults bind the studio and the agent", async () => {
+  const catalogue = await call<{
+    items: ModelRow[];
+    defaultImageModelId: string;
+    defaultEditModelId: string;
+    defaultVideoModelId: string;
+  }>("GET", "/models");
+  const images = catalogue.body.items.filter(
+    (model) => model.enabled && model.configured && model.kind === "image",
+  );
+  assert(images.length, "no image model to bind");
+  const original = catalogue.body.defaultImageModelId;
+  const next = images.find((model) => model.id !== original)?.id ?? images[0]!.id;
+  const saved = await call<{ defaultImageModelId: string }>("PUT", "/models/generation-defaults", {
+    imageModelId: next,
   });
-  assert(created.status === 201, `profile create status ${created.status}`);
-  const profileId = created.body.id;
-
-  try {
-    const conversation = await call<{ id: string; modelId: string; profileId: string }>("POST", "/conversations", {
-      profileId,
-    });
-    assert(conversation.status === 201 || conversation.status === 200, `conversation status ${conversation.status}`);
-    assert(conversation.body.profileId === profileId, `profile not stored: ${conversation.body.profileId}`);
-    assert(conversation.body.modelId === pinned.id, `model ${conversation.body.modelId}, wanted ${pinned.id}`);
-
-    // Generation is off in this profile, so the tool is not registered at all
-    // and asking for a picture cannot reach it. The gate holds whether or not
-    // the pinned model's provider chose to answer, so it is asserted first.
-    const run = await converse("画一张猫的图。", { conversationId: conversation.body.id });
-    const reached = run.tools.filter((tool) => /image|memory|web_search|file_search/.test(tool.name));
-    assert(!reached.length, `gated tools still registered: ${reached.map((tool) => tool.name).join(",")}`);
-    if (run.finished !== "run.completed") {
-      // A model this suite pinned only to prove pinning is not one the user
-      // chose, so its provider refusing is an environment fact, not a defect.
-      throw new Skip(`the pinned model refused the request: ${run.finished}`);
-    }
-
-    const cleared = await call<{ profileId: string }>("PATCH", `/conversations/${conversation.body.id}`, {
-      profileId: "",
-    });
-    assert(cleared.body.profileId === "", `clearing the profile left ${cleared.body.profileId}`);
-    await call("DELETE", `/conversations/${conversation.body.id}`);
-    return `pinned ${pinned.id}, ${run.tools.length} tool calls, none of them gated`;
-  } finally {
-    await call("DELETE", `/profiles/${profileId}`);
-  }
+  assert(saved.status === 200, `status ${saved.status}`);
+  assert(saved.body.defaultImageModelId === next, `saved ${saved.body.defaultImageModelId}, wanted ${next}`);
+  const boot = await call<{ defaultImageModelId: string }>("GET", "/bootstrap");
+  assert(boot.body.defaultImageModelId === next, `bootstrap still ${boot.body.defaultImageModelId}`);
+  await call("PUT", "/models/generation-defaults", { imageModelId: original });
+  return `image default ${next}`;
 });
 
 await check("the job queue streams a generation to completion", async () => {

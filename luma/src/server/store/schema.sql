@@ -123,7 +123,6 @@ CREATE TABLE IF NOT EXISTS conversations (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT 'New conversation',
   model_id   TEXT NOT NULL,
-  profile_id TEXT NOT NULL DEFAULT '',
   archived   INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -330,21 +329,3 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
-
--- A named bundle of models, capabilities, MCP servers and prompts. A
--- conversation points at one; an empty profile_id means the default.
-CREATE TABLE IF NOT EXISTS profiles (
-  id              TEXT PRIMARY KEY,
-  name            TEXT NOT NULL,
-  chat_model_id   TEXT NOT NULL DEFAULT '',
-  image_model_id  TEXT NOT NULL DEFAULT '',
-  edit_model_id   TEXT NOT NULL DEFAULT '',
-  video_model_id  TEXT NOT NULL DEFAULT '',
-  capabilities    TEXT NOT NULL DEFAULT '{}',
-  mcp_servers     TEXT NOT NULL DEFAULT '[]',
-  global_prompt   TEXT NOT NULL DEFAULT '',
-  tool_prompt     TEXT NOT NULL DEFAULT '',
-  sort_order      INTEGER NOT NULL DEFAULT 0,
-  created_at      INTEGER NOT NULL,
-  updated_at      INTEGER NOT NULL
-);

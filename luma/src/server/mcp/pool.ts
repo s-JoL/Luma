@@ -134,19 +134,6 @@ export class McpPool {
     return output;
   }
 
-  /**
-   * Whether an agent tool name belongs to one of the given servers. The server
-   * id is encoded in the tool name because pi tool names have to be flat, so
-   * profile scoping reads it back out of the suffix rather than keeping a second
-   * index that could drift.
-   */
-  serverOf(toolName: string, allowed: Set<string>) {
-    for (const id of allowed) {
-      if (toolName.endsWith(`_mcp_${id.replaceAll(":", "__")}`)) return true;
-    }
-    return false;
-  }
-
   async close() {
     await Promise.allSettled(this.clients.map(({ client }) => client.close()));
     this.clients = [];

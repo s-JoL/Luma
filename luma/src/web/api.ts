@@ -23,8 +23,6 @@ import type {
   ModelInput,
   ModelSpec,
   Paginated,
-  Profile,
-  ProfileInput,
   PromptDefaults,
   PromptSettings,
   Provenance,
@@ -151,8 +149,8 @@ export const api = {
       undefined,
       signal,
     ),
-  createConversation: (modelId?: string, profileId?: string) =>
-    request<ConversationSummary>("POST", "/conversations", { modelId, profileId }),
+  createConversation: (modelId?: string) =>
+    request<ConversationSummary>("POST", "/conversations", { modelId }),
   conversation: (id: string) =>
     request<ConversationSummary & { activeRun: (RunSummary & { resumeSeq: number }) | null }>(
       "GET",
@@ -160,9 +158,6 @@ export const api = {
     ),
   setConversationModel: (id: string, modelId: string) =>
     request<ConversationSummary>("PATCH", `/conversations/${id}`, { modelId }),
-  /** An empty id puts the conversation back on the deployment-wide settings. */
-  setConversationProfile: (id: string, profileId: string) =>
-    request<ConversationSummary>("PATCH", `/conversations/${id}`, { profileId }),
   deleteConversation: (id: string) => request<void>("DELETE", `/conversations/${id}`),
   messages: (id: string, after = -1) =>
     request<Paginated<StoredMessage>>("GET", `/conversations/${id}/messages?after=${after}`),
@@ -194,20 +189,26 @@ export const api = {
   setProviderKey: (id: string, value: string) => request<void>("PUT", `/providers/${id}/key`, { value }),
   remoteModels: (id: string) => request<{ items: DiscoveredModel[] }>("GET", `/providers/${id}/models`),
 
-  models: () => request<{ items: ModelSpec[]; defaultModelId: string }>("GET", "/models"),
+  models: () =>
+    request<{
+      items: ModelSpec[];
+      defaultModelId: string;
+      defaultImageModelId: string;
+      defaultEditModelId: string;
+      defaultVideoModelId: string;
+    }>("GET", "/models"),
   createModel: (input: ModelInput) => request<ModelSpec>("POST", "/models", input),
   createModels: (providerId: string, models: ModelInput[]) =>
     request<{ added: string[]; skipped: string[] }>("POST", "/models/bulk", { providerId, models }),
   updateModel: (id: string, input: Partial<ModelInput>) => request<ModelSpec>("PATCH", `/models/${id}`, input),
   deleteModel: (id: string) => request<void>("DELETE", `/models/${id}`),
   setDefaultModel: (modelId: string) => request<{ defaultModelId: string }>("PUT", "/models/default", { modelId }),
-
-  profiles: () => request<{ items: Profile[]; defaultProfileId: string }>("GET", "/profiles"),
-  createProfile: (input: ProfileInput) => request<Profile>("POST", "/profiles", input),
-  updateProfile: (id: string, input: ProfileInput) => request<Profile>("PATCH", `/profiles/${id}`, input),
-  deleteProfile: (id: string) => request<void>("DELETE", `/profiles/${id}`),
-  setDefaultProfile: (profileId: string) =>
-    request<{ defaultProfileId: string }>("PUT", "/profiles/default", { profileId }),
+  setGenerationDefaults: (input: { imageModelId?: string; editModelId?: string; videoModelId?: string }) =>
+    request<{ defaultImageModelId: string; defaultEditModelId: string; defaultVideoModelId: string }>(
+      "PUT",
+      "/models/generation-defaults",
+      input,
+    ),
 
   jobs: (query: { status?: JobStatus; conversationId?: string; limit?: number } = {}) =>
     request<{ items: JobRecord[] }>(

@@ -1,7 +1,6 @@
 # 能力
 
-部署级开关在 `PATCH /v1/capabilities`。对话还可以挂一个 profile：两边都开，
-工具才会出现。profile 不能打开部署关掉的东西。
+部署级开关在 `PATCH /v1/capabilities`。关掉的东西，工具不会出现。
 
 ## 模型与供应商
 
@@ -135,9 +134,3 @@ MCP 的正当用途是接「还没有 Luma adapter 的工具」，不是再接�
 不是创作台的第二条出图路径。创作台只列出 generation 模型。
 
 环境变量展开：`AIGC_ROOT`、`PROJECT_ROOT`、`NODE_EXE`、`{PROVIDER}_API_KEY`。
-
-## Profile
-
-一行 `profiles`：聊天/生图/编辑/视频模型 id、能力布尔值、MCP 白名单、可选的
-提示词覆盖。对话指向一个 profile；空 id 表示用默认。没有默认 profile 时，纯
-部署配置生效。

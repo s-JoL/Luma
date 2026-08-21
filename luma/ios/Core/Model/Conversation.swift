@@ -8,13 +8,12 @@ struct ConversationSummary: Decodable, Sendable, Identifiable, Hashable {
     let id: ConversationId
     let title: String
     let modelId: ModelId
-    let profileId: String
     let createdAt: Int
     let updatedAt: Int
     let messageCount: Int
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, modelId, profileId, createdAt, updatedAt, messageCount
+        case id, title, modelId, createdAt, updatedAt, messageCount
     }
 
     init(from decoder: any Decoder) throws {
@@ -22,7 +21,6 @@ struct ConversationSummary: Decodable, Sendable, Identifiable, Hashable {
         id = try c.decode(ConversationId.self, forKey: .id)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         modelId = try c.decodeIfPresent(ModelId.self, forKey: .modelId) ?? ModelId("")
-        profileId = try c.decodeIfPresent(String.self, forKey: .profileId) ?? ""
         createdAt = try c.decodeIfPresent(Int.self, forKey: .createdAt) ?? 0
         updatedAt = try c.decodeIfPresent(Int.self, forKey: .updatedAt) ?? 0
         messageCount = try c.decodeIfPresent(Int.self, forKey: .messageCount) ?? 0
@@ -51,7 +49,6 @@ struct ConversationDetail: Decodable, Sendable {
     let id: ConversationId
     let title: String
     let modelId: ModelId
-    let profileId: String
     let activeRun: ActiveRun?
 
     struct ActiveRun: Decodable, Sendable {
@@ -61,7 +58,7 @@ struct ConversationDetail: Decodable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, modelId, profileId, activeRun
+        case id, title, modelId, activeRun
     }
 
     init(from decoder: any Decoder) throws {
@@ -69,7 +66,6 @@ struct ConversationDetail: Decodable, Sendable {
         id = try c.decode(ConversationId.self, forKey: .id)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         modelId = try c.decodeIfPresent(ModelId.self, forKey: .modelId) ?? ModelId("")
-        profileId = try c.decodeIfPresent(String.self, forKey: .profileId) ?? ""
         activeRun = try c.decodeIfPresent(ActiveRun.self, forKey: .activeRun)
     }
 }

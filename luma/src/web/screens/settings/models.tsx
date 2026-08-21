@@ -6,7 +6,6 @@ import type {
   GenerationOp,
   ModelKind,
   ModelSpec,
-  Profile,
   Provider,
   ProviderAuthConfig,
   ProviderAuthStyle,
@@ -104,22 +103,32 @@ function AuthFields({ draft, onChange }: { draft: AuthDraft; onChange: (next: Au
 }
 
 /**
- * Providers, models and which model is the default: read together because every
- * page here needs a provider's name to say anything useful about a model, and one
- * of these pages mounts at a time.
+ * Providers and models: read together because every page here needs a
+ * provider's name to say anything useful about a model, and one of these
+ * pages mounts at a time.
  */
 function useCatalogue(reload: () => Promise<void>) {
   const toast = useToast();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<ModelSpec[]>([]);
-  const [defaultModelId, setDefaultModelId] = useState("");
+  const [defaults, setDefaults] = useState({
+    defaultModelId: "",
+    defaultImageModelId: "",
+    defaultEditModelId: "",
+    defaultVideoModelId: "",
+  });
   const [ready, setReady] = useState(false);
 
   const refresh = useCallback(async () => {
     const [providerList, modelList] = await Promise.all([api.providers(), api.models()]);
     setProviders(providerList);
     setModels(modelList.items);
-    setDefaultModelId(modelList.defaultModelId);
+    setDefaults({
+      defaultModelId: modelList.defaultModelId,
+      defaultImageModelId: modelList.defaultImageModelId,
+      defaultEditModelId: modelList.defaultEditModelId,
+      defaultVideoModelId: modelList.defaultVideoModelId,
+    });
     setReady(true);
     await reload();
   }, [reload]);
@@ -128,7 +137,7 @@ function useCatalogue(reload: () => Promise<void>) {
     void refresh().catch((error: unknown) => toast(String(error), true));
   }, [refresh, toast]);
 
-  return { providers, models, defaultModelId, refresh, ready };
+  return { providers, models, defaults, refresh, ready };
 }
 
 /**
@@ -284,7 +293,7 @@ export function ProvidersSection({ reload }: { reload: () => Promise<void> }) {
  */
 export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
-  const { providers, models, defaultModelId, refresh, ready } = useCatalogue(reload);
+  const { providers, models, defaults, refresh, ready } = useCatalogue(reload);
   const [editing, setEditing] = useState<ModelSpec | null>(null);
   const chat = models
     .filter((model) => isChatKind(model.kind))
@@ -320,7 +329,7 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 <strong className="text-sm">{model.name}</strong>
-                {model.id === defaultModelId ? <Badge tone="success">默认</Badge> : null}
+                {model.id === defaults.defaultModelId ? <Badge tone="success">默认</Badge> : null}
                 {model.configured ? null : <Badge tone="danger">提供方缺少密钥</Badge>}
               </div>
               <div className="truncate text-xs text-muted-foreground">
@@ -346,7 +355,7 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
             </Tooltip>
             <Button
               size="sm"
-              disabled={model.id === defaultModelId || !model.enabled}
+              disabled={model.id === defaults.defaultModelId || !model.enabled}
               onClick={() => void act(() => api.setDefaultModel(model.id), "已设为默认").then(refresh)}
             >
               设为默认
@@ -388,37 +397,76 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
 /**
  * The backends that make pictures and video, and what each one is allowed to do.
  *
- * Three roles a row can hold, and they are independent, which is exactly why they
- * are spelled out rather than left to be inferred from two icons: a profile can
- * name the model as the one the agent draws with, the wrench can additionally hand
- * it over as a tool of its own that a conversation may call by name, and a model
- * with neither is still perfectly usable by hand in the studio. "Enabled off" is
- * the only state that means nothing can reach it.
+ * The defaults at the top are what the agent and a fresh studio form use. The
+ * wrench additionally hands a row to the conversation as a tool of its own.
+ * A model with neither is still usable by hand in the studio.
  */
 export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
   const act = useAction();
   const toast = useToast();
-  const { providers, models, refresh, ready } = useCatalogue(reload);
+  const { providers, models, defaults, refresh, ready } = useCatalogue(reload);
   const [editing, setEditing] = useState<ModelSpec | null>(null);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
   /** Live schemas, so a row can say which parameters it actually offers. */
   const [tools, setTools] = useState<StudioTool[]>([]);
   const generation = models.filter((model) => isGenerationKind(model.kind));
 
   useEffect(() => {
-    void Promise.all([api.profiles(), api.studioTools()])
-      .then(([profileList, catalogue]) => {
-        setProfiles(profileList.items);
-        setTools(catalogue.items);
-      })
+    void api
+      .studioTools()
+      .then((catalogue) => setTools(catalogue.items))
       .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), true));
   }, [toast]);
 
   /** A blank generation row wants a mode that can generate, not the chat default. */
   const imageMode = API_MODES.find((mode) => mode.kinds?.includes("image"))?.id ?? "openai-images";
+  const images = generation.filter((model) => model.kind === "image" && model.enabled);
+  const videos = generation.filter((model) => model.kind === "video" && model.enabled);
+  const pickDefaults = (kind: "image" | "video", op?: GenerationOp) => [
+    { value: "", label: "按可用后端选" },
+    ...generation
+      .filter(
+        (model) =>
+          model.kind === kind &&
+          model.enabled &&
+          (!op || model.ops.includes(op) || model.ops.length === 0),
+      )
+      .map((model) => ({ value: model.id, label: model.name, hint: model.providerId })),
+  ];
+  const setDefault = (slot: "imageModelId" | "editModelId" | "videoModelId", value: string) =>
+    void act(() => api.setGenerationDefaults({ [slot]: value }), "已保存").then(refresh);
 
   return (
     <>
+      {images.length || videos.length ? (
+        <Section title="默认后端" hint="对话里的生图、改图、做视频走这里。创作台打开时也先选中它们。">
+          <SectionBody>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label="生图">
+                <Select
+                  value={defaults.defaultImageModelId}
+                  options={pickDefaults("image", "text_to_image")}
+                  onChange={(value) => setDefault("imageModelId", value)}
+                />
+              </Field>
+              <Field label="改图">
+                <Select
+                  value={defaults.defaultEditModelId}
+                  options={pickDefaults("image", "image_to_image")}
+                  onChange={(value) => setDefault("editModelId", value)}
+                />
+              </Field>
+              <Field label="视频">
+                <Select
+                  value={defaults.defaultVideoModelId}
+                  options={pickDefaults("video")}
+                  onChange={(value) => setDefault("videoModelId", value)}
+                />
+              </Field>
+            </div>
+          </SectionBody>
+        </Section>
+      ) : null}
+
       <Section
         title="生成后端"
         hint="关掉就用不了。扳手是额外给对话一个能点名的工具，创作台不需要。"
@@ -444,12 +492,11 @@ export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
           </SectionBody>
         ) : null}
         {generation.map((model) => {
-          const named = profiles.filter(
-            (profile) =>
-              profile.imageModelId === model.id ||
-              profile.editModelId === model.id ||
-              profile.videoModelId === model.id,
-          );
+          const roles = [
+            defaults.defaultImageModelId === model.id ? "默认生图" : "",
+            defaults.defaultEditModelId === model.id ? "默认改图" : "",
+            defaults.defaultVideoModelId === model.id ? "默认视频" : "",
+          ].filter(Boolean);
           const parameters = tools
             .filter((tool) => tool.modelId === model.id)
             .map((tool) => `${tool.op}（${Object.keys(tool.schema.properties ?? {}).length} 项参数）`);
@@ -463,10 +510,12 @@ export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
                     {model.ops.length ? ` · ${model.ops.join(" / ")}` : ""}
                   </Badge>
                   {model.agentTool ? <Badge tone="success">对话可点名</Badge> : null}
-                  {named.length ? (
-                    <Badge tone="outline">预设 {named.map((profile) => profile.name).join("、")}</Badge>
-                  ) : null}
-                  {!model.agentTool && !named.length ? <Badge tone="outline">仅创作台</Badge> : null}
+                  {roles.map((role) => (
+                    <Badge key={role} tone="outline">
+                      {role}
+                    </Badge>
+                  ))}
+                  {!model.agentTool && !roles.length ? <Badge tone="outline">仅创作台</Badge> : null}
                   {model.configured ? null : <Badge tone="danger">提供方缺少密钥</Badge>}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
@@ -1054,7 +1103,7 @@ function ModelEditor({
             <Switch label="启用" checked={draft.enabled} onChange={(value) => set("enabled", value)} />
             <Switch
               label="作为独立工具提供给对话模型"
-              hint="打开后，对话里可以点名用这个模型。默认只走预设里选中的那个。"
+              hint="打开后，对话里可以点名用这个模型。默认走上面选中的那个。"
               checked={draft.agentTool}
               onChange={(value) => set("agentTool", value)}
             />

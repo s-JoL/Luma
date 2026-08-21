@@ -10,7 +10,7 @@ import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../prompts/defaults.
 import { json } from "./db.ts";
 import type { Store } from "./store.ts";
 
-const SEED_VERSION = "15";
+const SEED_VERSION = "16";
 
 /**
  * Providers dropped from the defaults; removed on upgrade unless customised.
@@ -199,6 +199,7 @@ const ENV_SECRETS: Array<[string, string[]]> = [
 
 export function seed(store: Store, config: Config, vault: SecretVault) {
   installWorkflows(store);
+  retireLegacyProfiles(store, config);
   const previousVersion = store.getMeta("seed_version");
   if (previousVersion === SEED_VERSION) return false;
   for (const id of RETIRED_PROVIDERS) {
@@ -259,16 +260,12 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
   if (previousVersion === "13") store.deleteModel(WAN_VIDEO_ID);
   if (previousVersion === "14") store.deleteModel(PREVIOUS_VIDEO_ID);
   if (adopted.length) console.log(`[seed] adopted shipped parameters for ${adopted.join(", ")}`);
-  applyShippedProfile(store, config);
+  applyShippedDefaults(store, config);
   const prompts = config.prompts();
   config.savePrompts({
     globalPrompt: prompts.globalPrompt || DEFAULT_GLOBAL_PROMPT,
     toolPrompt: prompts.toolPrompt || DEFAULT_TOOL_PROMPT,
   });
-  // The first seeded row is the default. Naming one here would make the list
-  // below something the code depends on rather than data a user can replace.
-  const first = MODELS[0];
-  if (first && !store.getSetting<string>("defaultModelId", "")) config.setDefaultModelId(first.id);
   for (const [name, envNames] of ENV_SECRETS) {
     if (vault.has(name)) continue;
     const value = envNames.map((envName) => process.env[envName]).find((item) => item?.trim());
@@ -277,17 +274,6 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
   store.setMeta("seed_version", SEED_VERSION);
   return true;
 }
-
-/** Earlier shipped chat defaults; still pointing at one of these means nobody picked a favourite. */
-const PREVIOUS_CHAT_DEFAULTS = new Set([
-  "grok-4.6",
-  "claude-opus-4.6",
-  "gemini-3.7-flash",
-  "cometapi:claude-opus-4.6",
-  "cometapi:gemini-3.7-flash",
-  "cometapi:glm-5.3",
-  "cometapi:kimi-k3",
-]);
 
 const STALE_SHIPPED_NAMES = new Set([
   "Grok 4.6 · CometAPI",
@@ -346,48 +332,50 @@ function polishShippedRow(existing: ModelSpec, model: ModelInput) {
 }
 
 /**
- * The shipped "通用" preset: chat, generate, edit, video. Existing installs keep
- * extra models they already added; only this named preset is retargeted, and only
- * while it is still called 通用.
+ * An old install stored chat and generation defaults on a named preset. Copy
+ * those slots into settings if they are still empty, then drop the leftover
+ * table. Runs on every boot so an install that already passed seed 16 still
+ * loses the table.
  */
-function applyShippedProfile(store: Store, config: Config) {
+function retireLegacyProfiles(store: Store, config: Config) {
+  const exists = store.db.get("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'profiles'");
+  if (exists) {
+    const defaultId = store.getSetting<string>("defaultProfileId", "");
+    const row =
+      (defaultId ? store.db.get("SELECT * FROM profiles WHERE id = ?", defaultId) : undefined) ??
+      store.db.get("SELECT * FROM profiles WHERE id = ?", "default") ??
+      store.db.get("SELECT * FROM profiles WHERE name = ?", "通用");
+    if (row) {
+      const chat = String(row.chat_model_id ?? "");
+      if (!store.getSetting<string>("defaultModelId", "") && chat) config.setDefaultModelId(chat);
+      const current = config.generationDefaults();
+      config.setGenerationDefaults({
+        imageModelId: current.imageModelId || String(row.image_model_id ?? ""),
+        editModelId: current.editModelId || String(row.edit_model_id ?? ""),
+        videoModelId: current.videoModelId || String(row.video_model_id ?? ""),
+      });
+    }
+    store.db.exec("DROP TABLE IF EXISTS profiles");
+  }
+  if (store.getSetting<string>("defaultProfileId", "")) store.setSetting("defaultProfileId", "");
+}
+
+/**
+ * Chat and generation defaults for a new install, or one whose slots are still empty.
+ */
+function applyShippedDefaults(store: Store, config: Config) {
   const chat = store.getModel(CHAT_ID);
   const image = store.getModel(IMAGE_ID);
   const edit = store.getModel(EDIT_ID);
   const video = store.getModel(VIDEO_ID);
 
-  if (!store.listProfiles().length) {
-    if (!chat && !image) return;
-    store.upsertProfile({
-      id: "default",
-      name: "通用",
-      chatModelId: chat?.id ?? "",
-      imageModelId: image?.id ?? "",
-      editModelId: edit?.id ?? "",
-      videoModelId: video?.id ?? "",
-      capabilities: { memory: true, files: true, web: true, coding: true, skills: true, generation: true },
-      mcpServers: [],
-      sortOrder: 0,
-    });
-    config.setDefaultProfileId("default");
-  } else {
-    const id = config.defaultProfileId() || store.listProfiles()[0]?.id;
-    const profile = id ? store.getProfile(id) : undefined;
-    if (profile?.name === "通用") {
-      store.upsertProfile({
-        ...profile,
-        chatModelId: chat?.id ?? profile.chatModelId,
-        imageModelId: image?.id ?? profile.imageModelId,
-        editModelId: edit?.id ?? profile.editModelId,
-        videoModelId: video?.id ?? profile.videoModelId,
-      });
-    }
-  }
-
-  const current = store.getSetting<string>("defaultModelId", "");
-  if (chat?.enabled && (!current || PREVIOUS_CHAT_DEFAULTS.has(current))) {
-    config.setDefaultModelId(CHAT_ID);
-  }
+  if (chat?.enabled && !config.defaultModelId()) config.setDefaultModelId(CHAT_ID);
+  const defaults = config.generationDefaults();
+  config.setGenerationDefaults({
+    imageModelId: defaults.imageModelId || image?.id || "",
+    editModelId: defaults.editModelId || edit?.id || "",
+    videoModelId: defaults.videoModelId || video?.id || "",
+  });
 }
 
 /** Hash of each shipped graph as this code last wrote it, by file name. */

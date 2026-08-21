@@ -8,7 +8,7 @@
  */
 import { Hono } from "hono";
 import type { GenerationOp, JobInput, ModelSpec, StudioTool } from "@shared/types.ts";
-import { resolveProfile } from "../../agent/profile.ts";
+import { resolveGeneration } from "../../agent/defaults.ts";
 import { isRunnable, opsOf, schemaOf, studioPriority } from "../../generation/index.ts";
 import type { Services } from "../../services.ts";
 import { readJson } from "../body.ts";
@@ -69,7 +69,7 @@ export function studioRoutes(services: Services) {
     if (!config.capabilities().studio.enabled) return [];
     const specs = store.listModels().filter((spec) => spec.enabled && isRunnable(spec));
     const byId = new Map(specs.map((spec) => [spec.id, spec]));
-    const preferred = resolveProfile(store, config, {});
+    const preferred = resolveGeneration(store, config);
     const bound = (tool: StudioTool) => {
       if (tool.kind === "generate") return preferred.image?.id === tool.modelId;
       if (tool.kind === "edit") return preferred.edit?.id === tool.modelId;

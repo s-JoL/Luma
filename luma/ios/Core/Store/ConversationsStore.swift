@@ -131,11 +131,11 @@ final class ConversationsStore {
     /// a row that opens nothing. What the caller gets instead is `isCreating`,
     /// which is what the button needs in order to answer the tap in the frame it
     /// happened in rather than a round trip later.
-    func create(modelId: ModelId?, profileId: String?) async throws -> ConversationSummary {
+    func create(modelId: ModelId?) async throws -> ConversationSummary {
         isCreating = true
         defer { isCreating = false }
         let created = try await api.send(
-            .createConversation(modelId: modelId, profileId: profileId), as: ConversationSummary.self
+            .createConversation(modelId: modelId), as: ConversationSummary.self
         )
         items.insert(created, at: 0)
         return created
@@ -187,7 +187,6 @@ private extension ConversationSummary {
             id: existing.id,
             title: title ?? existing.title,
             modelId: existing.modelId,
-            profileId: existing.profileId,
             createdAt: existing.createdAt,
             updatedAt: updatedAt ?? existing.updatedAt,
             messageCount: existing.messageCount
@@ -197,13 +196,12 @@ private extension ConversationSummary {
 
 extension ConversationSummary {
     init(
-        id: ConversationId, title: String, modelId: ModelId, profileId: String,
+        id: ConversationId, title: String, modelId: ModelId,
         createdAt: Int, updatedAt: Int, messageCount: Int
     ) {
         self.id = id
         self.title = title
         self.modelId = modelId
-        self.profileId = profileId
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messageCount = messageCount

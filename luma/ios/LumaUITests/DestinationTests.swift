@@ -66,15 +66,9 @@ final class DestinationTests: XCTestCase {
         app.tabBars.buttons["设置"].tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 10))
         capture("settings", app)
-        app.staticTexts["预设"].firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["预设"].waitForExistence(timeout: 10))
-        capture("settings-profiles", app)
-        app.staticTexts["通用"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["生图"].waitForExistence(timeout: 10))
-        capture("settings-profile-detail", app)
-
-        app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["预设"].waitForExistence(timeout: 10))
+        app.staticTexts["对话模型"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["对话模型"].waitForExistence(timeout: 10))
+        capture("settings-models", app)
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 10))
 

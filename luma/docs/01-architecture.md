@@ -113,7 +113,7 @@ CREATE TABLE mcp_servers (
 )
 
 CREATE TABLE conversations (
-  id, title, model_id, profile_id, archived, created_at, updated_at
+  id, title, model_id, archived, created_at, updated_at
 )
 
 CREATE TABLE messages (
@@ -163,12 +163,6 @@ CREATE TABLE jobs (
   id, kind, op, model_id, model_name, conversation_id, status, progress, note,
   params, sources, assets, error, provider_job_id, created_at, started_at,
   finished_at, updated_at
-)
-
-CREATE TABLE profiles (
-  id, name, chat_model_id, image_model_id, edit_model_id, video_model_id,
-  capabilities, mcp_servers, global_prompt, tool_prompt, sort_order,
-  created_at, updated_at
 )
 ```
 

@@ -31,7 +31,6 @@ struct ImageId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } 
 struct VideoId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
 struct FileId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
 struct ModelId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
-struct ProfileId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
 struct ProviderId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
 struct ApprovalId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }
 struct JobId: RawId { let raw: String; init(_ raw: String) { self.raw = raw } }

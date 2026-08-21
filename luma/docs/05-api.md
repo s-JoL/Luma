@@ -16,7 +16,7 @@
 
 ## 启动包
 
-| GET | `/bootstrap` | 模型、供应商、默认值、profile、能力、MCP 状态、提示词、记忆建议 key、上传上限 |
+| GET | `/bootstrap` | 模型、供应商、默认对话/生图/改图/视频、能力、MCP 状态、提示词、记忆建议 key、上传上限 |
 
 客户端冷启动先拉这个。
 
@@ -25,7 +25,7 @@
 | 方法 | 路径 | |
 |---|---|---|
 | GET | `/conversations` | `limit`、`cursor`=`updatedAt` |
-| POST | `/conversations` | 开一个；解析模型/profile |
+| POST | `/conversations` | 开一个；解析模型 |
 | GET | `/conversations/search` | 跨对话搜转写 |
 | GET/PATCH/DELETE | `/conversations/:id` | 详情含 `activeRun.resumeSeq` |
 | GET | `/conversations/:id/messages` | `after=` 增量，或 `limit`/`before` 分页 |
@@ -85,7 +85,7 @@ Run 事件包括 `message.delta/start/end`、工具、`tool.approval.*`、
 `PUT/DELETE /providers/:id/key`，`GET /providers/:id/models`（拉它的在线目录）。
 
 模型：`GET/POST /models`，`PATCH/DELETE /models/:id`，`POST /models/bulk`，
-`PUT /models/default`。
+`PUT /models/default`，`PUT /models/generation-defaults`。
 
 能力：`GET/PATCH /capabilities`，`PUT/DELETE /capabilities/secrets/:name`
 （`tavily` | `embedding`）。
@@ -94,9 +94,6 @@ Run 事件包括 `message.delta/start/end`、工具、`tool.approval.*`、
 
 MCP：`GET/POST /mcp/servers`，`PATCH/DELETE /mcp/servers/:id`，
 `POST /mcp/reconnect`。
-
-Profile：`GET/POST /profiles`，`PATCH/DELETE /profiles/:id`，
-`PUT /profiles/default`。
 
 安全：`GET /security`；`PUT /security/access-code`；
 `POST /security/totp` → `POST /security/totp/confirm`，`DELETE /security/totp`；

@@ -45,7 +45,7 @@ import {
   type ImageRef,
   type VideoRef,
 } from "./messages.ts";
-import { resolveProfile, skillsAllowed } from "./profile.ts";
+import { resolveGeneration } from "./defaults.ts";
 import { adoptTranscript } from "./projection.ts";
 import { LANE, type ConversationSession, type Sessions } from "./sessions.ts";
 import { fallbackTitle, generateTitle } from "./title.ts";
@@ -185,7 +185,7 @@ export class Runtime {
     if (this.active.has(conversationId)) throw new Error("Conversation already has an active run");
 
     const { spec, provider, model } = this.registry.resolve(input.modelId ?? conversation.modelId);
-    const resolved = resolveProfile(this.store, this.config, conversation);
+    const resolved = resolveGeneration(this.store, this.config);
     const capabilities = resolved.capabilities;
     const prompts = resolved.prompts;
 
@@ -267,7 +267,7 @@ export class Runtime {
       memoryTokenLimit: capabilities.memory.tokenLimit,
       filesEnabled: capabilities.files.enabled && capabilities.files.searchEnabled,
       webEnabled: capabilities.web.enabled,
-      skillCatalogue: skillsAllowed(resolved) ? skillCatalogue(skills) : "",
+      skillCatalogue: skillCatalogue(skills),
     });
 
     const uploads = uploadImageRefs.map((image) => ({
@@ -279,9 +279,7 @@ export class Runtime {
 
     // Server order is stable, so tool order is too, which is what keeps the
     // provider's prompt cache warm across turns.
-    const mcpTools = this.mcp
-      .currentTools()
-      .filter((tool) => !resolved.mcpServers || this.mcp.serverOf(tool.name, resolved.mcpServers));
+    const mcpTools = this.mcp.currentTools();
 
     const tools: AgentTool[] = [];
     if (capabilities.files.enabled && capabilities.files.searchEnabled) {
@@ -312,7 +310,7 @@ export class Runtime {
     );
     tools.push(...mcpTools);
     tools.push(...memoryTools(this.store, capabilities.memory));
-    if (skillsAllowed(resolved)) tools.push(...skillTools(skills));
+    tools.push(...skillTools(skills));
 
     let modelCallIndex = 0;
     let toolCallIndex = 0;

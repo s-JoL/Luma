@@ -39,10 +39,9 @@ extension Endpoint {
         .init(path: "/conversations", query: ["limit": String(limit), "cursor": cursor])
     }
 
-    static func createConversation(modelId: ModelId?, profileId: String?) throws -> Endpoint {
+    static func createConversation(modelId: ModelId?) throws -> Endpoint {
         var fields: [String: String] = [:]
         if let modelId, !modelId.raw.isEmpty { fields["modelId"] = modelId.raw }
-        if let profileId, !profileId.isEmpty { fields["profileId"] = profileId }
         return .init(method: "POST", path: "/conversations", body: try JSON.encode(fields))
     }
 
@@ -58,17 +57,6 @@ extension Endpoint {
         .init(
             method: "PATCH", path: "/conversations/\(id.raw)",
             body: try JSON.encode(["modelId": modelId.raw])
-        )
-    }
-
-    static func setConversationProfile(
-        _ id: ConversationId, profileId: String, modelId: ModelId? = nil
-    ) throws -> Endpoint {
-        var fields = ["profileId": profileId]
-        if let modelId, !modelId.raw.isEmpty { fields["modelId"] = modelId.raw }
-        return .init(
-            method: "PATCH", path: "/conversations/\(id.raw)",
-            body: try JSON.encode(fields)
         )
     }
 
@@ -257,14 +245,6 @@ extension Endpoint {
 
     static func setDefaultModel(_ id: ModelId) throws -> Endpoint {
         .init(method: "PUT", path: "/models/default", body: try JSON.encode(["modelId": id.raw]))
-    }
-
-    static func setDefaultProfile(_ id: String) throws -> Endpoint {
-        .init(method: "PUT", path: "/profiles/default", body: try JSON.encode(["profileId": id]))
-    }
-
-    static func patchProfile(_ id: String, _ body: ProfilePatch) throws -> Endpoint {
-        .init(method: "PATCH", path: "/profiles/\(id)", body: try JSON.encode(body))
     }
 
     /// Rebuilds every MCP connection. The reply carries the new status, but the

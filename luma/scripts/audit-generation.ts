@@ -690,12 +690,11 @@ await check("view_image is what puts pixels in front of the model", async () => 
   return "a named id resolves, an invented one does not";
 });
 
-await check("a deployment with no profiles still offers a working image backend", async () => {
-  const { resolveProfile } = await import("../src/server/agent/profile.ts");
+await check("an unbound generation slot still offers a working image backend", async () => {
+  const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
   const { Config } = await import("../src/server/config.ts");
   const config = new Config(store, vault);
-  const resolved = resolveProfile(store, config, {});
-  assert(!resolved.profile, "a conversation without a profile invented one");
+  const resolved = resolveGeneration(store, config);
   assert(resolved.image?.id === "hosted-image", `fell back to ${resolved.image?.id ?? "nothing"}`);
   assert(resolved.edit?.id === "hosted-image", `editor was ${resolved.edit?.id ?? "none"}`);
   assert(resolved.prompts.globalPrompt === config.prompts().globalPrompt, "the global prompt changed");
@@ -703,11 +702,11 @@ await check("a deployment with no profiles still offers a working image backend"
 });
 
 await check("a model asked for by name gets a tool of its own, and never twice", async () => {
-  const { resolveProfile } = await import("../src/server/agent/profile.ts");
+  const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
   const { Config } = await import("../src/server/config.ts");
   const config = new Config(store, vault);
   const toolsNow = () => {
-    const resolved = resolveProfile(store, config, {});
+    const resolved = resolveGeneration(store, config);
     return generationTools({
       jobs,
       store,
@@ -740,32 +739,17 @@ await check("a model asked for by name gets a tool of its own, and never twice",
   return `3 by default, ${named.length} once one model is named, and the default model is never doubled`;
 });
 
-await check("two profiles in one deployment get different tools", async () => {
-  const { resolveProfile } = await import("../src/server/agent/profile.ts");
+await check("the generation default is the model generate_image uses", async () => {
+  const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
   const { Config } = await import("../src/server/config.ts");
   const config = new Config(store, vault);
-  store.upsertProfile({ id: "draw", name: "画图", chatModelId: "chat", imageModelId: "local", capabilities: { memory: true, files: true, web: true, coding: false, generation: true, skills: true }, mcpServers: [] });
-  store.upsertProfile({ id: "write", name: "写作", chatModelId: "chat", capabilities: { memory: true, files: true, web: true, coding: false, generation: false, skills: true }, mcpServers: [] });
-
-  const drawing = resolveProfile(store, config, { profileId: "draw" });
-  const writing = resolveProfile(store, config, { profileId: "write" });
-  const drawTools = generationTools({ jobs, store, conversationId: "c3", image: drawing.image, edit: drawing.edit, video: drawing.video, uploads: [] });
-  const writeTools = generationTools({ jobs, store, conversationId: "c3", image: writing.image, edit: writing.edit, video: writing.video, uploads: [] });
-  assert(drawTools.length > 0, "the drawing profile got no generation tools");
-  assert(writeTools.length === 0, `the writing profile got ${writeTools.map((tool) => tool.name).join(", ")}`);
-  assert(drawing.image!.id === "local", `the drawing profile resolved to ${drawing.image!.id}`);
-  return `画图 → ${drawTools.map((tool) => tool.name).join(", ")}; 写作 → none`;
-});
-
-await check("a profile only narrows what the deployment configured", async () => {
-  const { resolveProfile } = await import("../src/server/agent/profile.ts");
-  const { Config } = await import("../src/server/config.ts");
-  const config = new Config(store, vault);
-  config.saveCapabilities({ web: { ...config.capabilities().web, enabled: false } });
-  store.upsertProfile({ id: "all-on", name: "全开", chatModelId: "chat", capabilities: { memory: true, files: true, web: true, coding: true, generation: true, skills: true }, mcpServers: [] });
-  const resolved = resolveProfile(store, config, { profileId: "all-on" });
-  assert(!resolved.capabilities.web.enabled, "a profile switched on a capability the deployment has not configured");
-  return "asking for web where the deployment has none does nothing";
+  config.setGenerationDefaults({ imageModelId: "local" });
+  const drawing = resolveGeneration(store, config);
+  assert(drawing.image!.id === "local", `resolved to ${drawing.image?.id}`);
+  config.setGenerationDefaults({ imageModelId: "hosted-image" });
+  const hosted = resolveGeneration(store, config);
+  assert(hosted.image!.id === "hosted-image", `resolved to ${hosted.image?.id}`);
+  return "the default image slot is what the agent draws with";
 });
 
 await check("discovery suggests a kind, and everything else follows from it", () => {

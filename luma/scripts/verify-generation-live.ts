@@ -22,7 +22,7 @@ const { Config } = await import("../src/server/config.ts");
 const { seed } = await import("../src/server/store/seed.ts");
 const { Jobs } = await import("../src/server/generation/jobs.ts");
 const { schemaOf, opsOf, forModel } = await import("../src/server/generation/index.ts");
-const { resolveProfile } = await import("../src/server/agent/profile.ts");
+const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
 const { saveImageBytes } = await import("../src/server/images.ts");
 
 ensureDirectories();
@@ -35,7 +35,7 @@ console.log(seed(store, config, vault) ? "seed: applied" : "seed: already curren
 
 /* ── what the agent is actually bound to ─────────────────────────────────── */
 
-const resolved = resolveProfile(store, config, {});
+const resolved = resolveGeneration(store, config);
 console.log("\nagent tool bindings");
 for (const [role, spec] of [
   ["generate_image", resolved.image],
@@ -44,7 +44,7 @@ for (const [role, spec] of [
 ] as const) {
   console.log(`  ${role.padEnd(15)} ${spec ? `${spec.name}  (${spec.id}, ${spec.apiMode})` : "— nothing bound"}`);
 }
-console.log(`  profile         ${resolved.profile?.name ?? "— none, falling back to sort order"}`);
+console.log(`  defaults        image=${resolved.image?.id ?? "—"} edit=${resolved.edit?.id ?? "—"} video=${resolved.video?.id ?? "—"}`);
 
 console.log("\ngeneration models and the parameters each one offers  (* studio only, never sent to the model)");
 for (const spec of store.listModels().filter((entry) => entry.kind === "image" || entry.kind === "video")) {

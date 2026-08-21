@@ -9,8 +9,6 @@ struct Bootstrap: Decodable, Sendable {
     let models: [ModelSpec]
     let providers: [Provider]
     let defaultModelId: ModelId
-    let profiles: [Profile]
-    let defaultProfileId: String
     let capabilities: Capabilities
     let mcp: [McpStatus]
     let prompts: PromptSettings
@@ -135,57 +133,6 @@ struct Provider: Decodable, Sendable, Identifiable, Hashable {
     /// A provider that declares it authenticates nobody must not be flagged as
     /// missing a key.
     var isKeyless: Bool { auth?.style == Provider.AuthConfig.Style.none }
-}
-
-struct Profile: Decodable, Sendable, Identifiable, Hashable {
-    let id: ProfileId
-    let name: String
-    let chatModelId: String
-    let imageModelId: String
-    /// Empty means edits go to `imageModelId` when it supports them.
-    let editModelId: String
-    let videoModelId: String
-    let mcpServers: [String]
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, chatModelId, imageModelId, editModelId, videoModelId, mcpServers
-    }
-
-    init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(ProfileId.self, forKey: .id)
-        name = try c.decode(String.self, forKey: .name)
-        chatModelId = try c.decodeIfPresent(String.self, forKey: .chatModelId) ?? ""
-        imageModelId = try c.decodeIfPresent(String.self, forKey: .imageModelId) ?? ""
-        editModelId = try c.decodeIfPresent(String.self, forKey: .editModelId) ?? ""
-        videoModelId = try c.decodeIfPresent(String.self, forKey: .videoModelId) ?? ""
-        mcpServers = try c.decodeIfPresent([String].self, forKey: .mcpServers) ?? []
-    }
-}
-
-struct ProfilePatch: Encodable, Sendable {
-    var name: String?
-    var chatModelId: String?
-    var imageModelId: String?
-    var editModelId: String?
-    var videoModelId: String?
-
-    func encode(to encoder: any Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(name, forKey: .name)
-        try c.encodeIfPresent(chatModelId, forKey: .chatModelId)
-        try c.encodeIfPresent(imageModelId, forKey: .imageModelId)
-        try c.encodeIfPresent(editModelId, forKey: .editModelId)
-        try c.encodeIfPresent(videoModelId, forKey: .videoModelId)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case name, chatModelId, imageModelId, editModelId, videoModelId
-    }
-}
-
-struct DefaultProfileReply: Decodable, Sendable {
-    var defaultProfileId: String
 }
 
 struct Capabilities: Decodable, Sendable {

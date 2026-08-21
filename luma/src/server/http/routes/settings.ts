@@ -102,9 +102,16 @@ export function settingsRoutes(services: Services) {
 
   // ------------------------------------------------------------------ models
 
-  app.get("/models", (context) =>
-    context.json({ items: store.listModels(), defaultModelId: config.defaultModelId() }),
-  );
+  app.get("/models", (context) => {
+    const generation = config.generationDefaults();
+    return context.json({
+      items: store.listModels(),
+      defaultModelId: config.defaultModelId(),
+      defaultImageModelId: generation.imageModelId,
+      defaultEditModelId: generation.editModelId,
+      defaultVideoModelId: generation.videoModelId,
+    });
+  });
 
   app.post("/models", async (context) => {
     const body = await readJson<ModelInput>(context);
@@ -166,6 +173,30 @@ export function settingsRoutes(services: Services) {
     const body = await readJson<{ modelId: string }>(context);
     if (!body.modelId || !store.getModel(body.modelId)) return fail(context, 400, "invalid", "Unknown model");
     return context.json({ defaultModelId: config.setDefaultModelId(body.modelId) });
+  });
+
+  app.put("/models/generation-defaults", async (context) => {
+    const body = await readJson<{ imageModelId?: string; editModelId?: string; videoModelId?: string }>(context);
+    const check = (id: string | undefined, kind: "image" | "video") => {
+      if (!id) return true;
+      const spec = store.getModel(id);
+      return Boolean(spec && spec.kind === kind);
+    };
+    if (body.imageModelId && !check(body.imageModelId, "image")) {
+      return fail(context, 400, "invalid", "imageModelId must be an image model");
+    }
+    if (body.editModelId && !check(body.editModelId, "image")) {
+      return fail(context, 400, "invalid", "editModelId must be an image model");
+    }
+    if (body.videoModelId && !check(body.videoModelId, "video")) {
+      return fail(context, 400, "invalid", "videoModelId must be a video model");
+    }
+    const next = config.setGenerationDefaults(body);
+    return context.json({
+      defaultImageModelId: next.imageModelId,
+      defaultEditModelId: next.editModelId,
+      defaultVideoModelId: next.videoModelId,
+    });
   });
 
   // ------------------------------------------------------------ capabilities
