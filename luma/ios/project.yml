@@ -9,8 +9,14 @@
 name: Luma
 options:
   bundleIdPrefix: works.earendil
+  # iOS 18 rather than 17. The transcript's scroll behaviour is built on
+  # `onScrollGeometryChange` and `onScrollPhaseChange` — the difference between
+  # asking the scroll view where it is and inferring it from a sentinel view —
+  # and the iOS 17 fallbacks for both were coarse enough to be their own class of
+  # bug. Liquid Glass is still gated on 26 at the call site, so the app keeps its
+  # look on 18 through 25 rather than requiring the newest OS to run at all.
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: true

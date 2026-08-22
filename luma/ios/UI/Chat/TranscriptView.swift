@@ -4,6 +4,14 @@ import UniformTypeIdentifiers
 
 /// The screen the app is for. Everything here serves one thing: text that is
 /// comfortable to read while it is still being written.
+///
+/// The shape of this file is the performance story. SwiftUI invalidates a view
+/// when state its body read changes, so anything read beside the `ForEach` over
+/// the turns is paid for by the whole transcript. Three things change at frame
+/// rate — the draft, the scroll position, and the streaming turn — and all three
+/// are deliberately read *below* the list rather than above it: by
+/// `ComposerBar`, by `JumpPillOverlay` and `TailFollower`, and by `LiveRow`. What
+/// is left in the container changes a handful of times per conversation.
 struct TranscriptView: View {
     let id: ConversationId
 
@@ -12,15 +20,13 @@ struct TranscriptView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     @State private var store: TranscriptStore?
-    @State private var draft = ""
-    @State private var atBottom = true
-    @State private var pendingCount = 0
-    /// The reader deliberately left the tail, as opposed to the layout moving.
-    @State private var scrolledAway = false
-    /// Bumped when something should force the view to the tail.
-    @State private var scrollRequests = 0
-    /// A finger is on the glass, so a change in position is the reader's doing.
-    @State private var dragging = false
+    @State private var composer = ComposerState()
+    @State private var follow = ScrollFollow()
+
+    // Presentation, which only a tap changes. These stay on the container
+    // because a sheet or a cover has to be attached above the thing it covers,
+    // and rebuilding the transcript once when someone opens a picture is a cost
+    // that is never paid twice in a row.
     @State private var viewer: ImageId?
     @State private var playing: PlayingVideo?
     @State private var opened: OpenedDocument?
@@ -29,18 +35,6 @@ struct TranscriptView: View {
     /// The user turn being rewritten, by seq. Nothing else identifies it after
     /// the rewind, which renumbers everything from that point on.
     @State private var editingSeq: Int?
-    @State private var attachments: [DraftAttachment] = []
-    @State private var uploading = false
-    @State private var showingAttach = false
-    @State private var pickingPhotos = false
-    @State private var photos: [PhotosPickerItem] = []
-    @State private var importing = false
-
-    private static let contentWidth: CGFloat = 768
-    /// Scrolling up this far releases the pin to the tail.
-    private static let followSlack: CGFloat = 40
-    /// Far enough that only a person could have done it, not a relayout.
-    private static let deliberateScroll: CGFloat = 200
 
     var body: some View {
         Group {
@@ -87,32 +81,13 @@ struct TranscriptView: View {
         .sheet(isPresented: $showingModels) {
             if let store { ModelPickerSheet(store: store) }
         }
-        .confirmationDialog("添加附件", isPresented: $showingAttach, titleVisibility: .visible) {
-            Button("相册") { pickingPhotos = true }
-            Button("文件") { importing = true }
-            Button("取消", role: .cancel) {}
-        }
-        .photosPicker(
-            isPresented: $pickingPhotos,
-            selection: $photos,
-            maxSelectionCount: max(1, remainingSlots),
-            matching: .any(of: [.images, .videos])
-        )
-        .onChange(of: photos) { _, items in
-            guard !items.isEmpty else { return }
-            Task { await upload(photos: items); photos = [] }
-        }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { Task { await upload(urls: urls) } }
-        }
         // Regenerating rewinds, so it says what it will discard rather than
         // warning in the abstract.
         .alert("重新生成", isPresented: .constant(regenerating != nil), presenting: regenerating) { turn in
             Button("取消", role: .cancel) { regenerating = nil }
             Button("重新生成", role: .destructive) {
                 if let store {
-                    atBottom = true
-                    scrolledAway = false
+                    follow.returnToTail()
                     Task { await store.regenerate(turn) }
                 }
                 regenerating = nil
@@ -126,28 +101,7 @@ struct TranscriptView: View {
         .toolbar {
             if let store {
                 ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button {
-                            showingModels = true
-                        } label: {
-                            Label("切换模型", systemImage: "arrow.up.arrow.down")
-                        }
-                        if store.isRunning {
-                            Button(role: .destructive) {
-                                Task { await store.stop() }
-                            } label: {
-                                Label("停止", systemImage: Symbols.stop)
-                            }
-                        } else {
-                            Button {
-                                Task { await store.continueRun() }
-                            } label: {
-                                Label("继续", systemImage: "arrow.forward")
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
+                    TranscriptMenu(store: store, pickModel: { showingModels = true })
                 }
             }
         }
@@ -158,255 +112,29 @@ struct TranscriptView: View {
     /// effect; a composer stacked below the scroll view is just a frosted panel
     /// over the page colour, which is the difference between Liquid Glass and a
     /// blur for its own sake.
-    @ViewBuilder
     private func content(_ store: TranscriptStore) -> some View {
-        transcript(store)
-            .composerBar {
-                ComposerView(
-                    text: $draft,
-                    attachments: $attachments,
-                    isRunning: store.isRunning,
-                    uploading: uploading,
-                    modelName: modelName(store),
-                    send: { submit(store) },
-                    stop: { Task { await store.stop() } },
-                    pickModel: { showingModels = true },
-                    attach: { showingAttach = true }
-                )
-            }
-    }
-
-    private func transcript(_ store: TranscriptStore) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Space.xl) {
-                    if store.turns.isEmpty && store.live == nil && !store.isLoading {
-                        TranscriptWelcome()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 80)
-                    }
-
-                    // A transcript being read and an empty conversation are two
-                    // different screens, and showing neither for the length of a
-                    // round trip is what makes opening one feel like a stall.
-                    if store.isLoading && store.turns.isEmpty {
-                        HStack { Spacer(); Spinner(); Spacer() }
-                            .padding(.top, 80)
-                    }
-
-                    if store.hasMoreHistory {
-                        HStack {
-                            Spacer()
-                            Spinner()
-                            Spacer()
-                        }
-                        .task { await store.pageBack() }
-                    }
-
-                    ForEach(store.turns) { turn in
-                        TurnView(
-                            turn: turn,
-                            citations: store.citations,
-                            isStreaming: false,
-                            isEditing: turn.role == .user && turn.seq == editingSeq,
-                            onImage: { viewer = $0 },
-                            onVideo: { playing = $0 },
-                            onDocument: { opened = $0 },
-                            onApproval: { approval, ok in
-                                Task { await store.decide(approval, approved: ok) }
-                            },
-                            onRegenerate: { regenerating = $0 },
-                            onEdit: store.isRunning ? nil : { editingSeq = $0.seq },
-                            onCancelEdit: { editingSeq = nil },
-                            onSubmitEdit: { turn, text in submitEdit(store, turn: turn, text: text) }
-                        )
-                        .equatable()
-                        .turnArrival()
-                        .id(turn.id)
-                    }
-
-                    if let pending = store.pending {
-                        PendingBubble(send: pending)
-                    }
-
-                    if let live = store.live {
-                        TurnView(
-                            turn: live,
-                            citations: store.citations,
-                            isStreaming: true,
-                            onImage: { viewer = $0 },
-                            onVideo: { playing = $0 },
-                            onDocument: { opened = $0 },
-                            onApproval: { approval, ok in
-                                Task { await store.decide(approval, approved: ok) }
-                            }
-                        )
-                        .equatable()
-                        .id(Turn.liveId)
-                    }
-
-                    // Below the reader's own message, not instead of it: the
-                    // pending bubble says "sent", this says "working".
-                    if store.isRunning && store.live == nil {
-                        ThinkingIndicator()
-                    }
-
-                    if let error = store.error {
-                        Text(error)
-                            .font(.callout)
-                            .foregroundStyle(Color.danger)
-                            .padding(Space.md)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                Color.danger.opacity(0.1),
-                                in: RoundedRectangle(cornerRadius: Radius.lg)
-                            )
-                    }
-
-                    // The tail-follow target. A 1pt view is enough, and giving it
-                    // the full width keeps it a real layout element rather than
-                    // something the lazy stack can collapse away.
-                    Color.clear
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 1)
-                        .id(bottomAnchor)
-                        // The iOS 17 read on "is the tail on screen": the
-                        // sentinel is only laid out when it is near the viewport.
-                        .onAppear { if #unavailable(iOS 18.0) { markAtBottom(true) } }
-                        .onDisappear { if #unavailable(iOS 18.0) { markAtBottom(false) } }
-                }
-                .frame(maxWidth: Self.contentWidth, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, sizeClass == .compact ? Space.lg : Space.xl)
-                .padding(.vertical, Space.xl)
-                .transcriptTypeSize()
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .transcriptScrollAnchors()
-            // How far the content's bottom sits past the viewport's. This has to
-            // come from the scroll view itself: the composer is a `safeAreaBar`,
-            // so an outer `GeometryReader` measures a taller box than the one the
-            // content actually scrolls in, and the difference — about the height
-            // of the composer — is enough to make "at the bottom" always true and
-            // yank the view out from under someone reading.
-            .trackDragging { dragging = $0 }
-            .trackTailDistance { reading in
-                let distance = reading.distanceFromTail
-                let isNear = distance < Self.followSlack
-                atBottom = isNear
-                if isNear {
-                    pendingCount = 0
-                    scrolledAway = false
-                } else if dragging {
-                    // Leaving the tail is a thing a *person* does. Inferring it
-                    // from distance alone was a feedback loop: one scroll that
-                    // did not land grew the gap, the gap looked like a reader
-                    // who had moved, following stopped, and the gap grew for
-                    // good. Only a finger on the glass sets this.
-                    scrolledAway = true
-                }
-            }
-            // A run finishing is the moment the answer is complete, and someone
-            // who was watching it should end up at the end of it.
-            .onChange(of: store.isRunning) { wasRunning, isRunning in
-                guard !isRunning, wasRunning, !scrolledAway else { return }
-                Task { @MainActor in
-                    // After the top-up has replaced the live turn.
-                    try? await Task.sleep(for: .milliseconds(120))
-                    withAnimation(Motion.move) { proxy.scrollTo(tailId(store), anchor: .bottom) }
-                    atBottom = true
-                    pendingCount = 0
-                }
-            }
-            // Follow the tail only while the reader has not scrolled up. An
-            // answer that yanks the view while someone is reading the middle of
-            // it is unusable, which makes this the most important interaction
-            // on the screen.
-            .onChange(of: scrollRequests) { _, _ in
-                Task { @MainActor in
-                    // Two passes: the pending bubble first, then whatever the
-                    // reply turns out to be once it starts arriving.
-                    withAnimation(Motion.move) { proxy.scrollTo(tailId(store), anchor: .bottom) }
-                    try? await Task.sleep(for: .milliseconds(250))
-                    atBottom = true
-                    proxy.scrollTo(tailId(store), anchor: .bottom)
-                }
-            }
-            // Following is gated on intent, not on the measurement. `atBottom`
-            // comes from scroll geometry that legitimately reads "not at the
-            // bottom" while the keyboard is animating or the composer inset is
-            // changing, and using it here meant an answer could start streaming
-            // below the fold behind a pill. `scrolledAway` only becomes true
-            // when someone drags a real distance, which is the actual question:
-            // did the reader leave the tail on purpose?
-            .onChange(of: store.live) { _, _ in
-                guard !scrolledAway else { return }
-                proxy.scrollTo(tailId(store), anchor: .bottom)
-            }
-            // The pill counts *turns* that arrived while the reader was away, not
-            // deltas: a streaming answer publishes sixty times a second and a
-            // pill reading "回到最新 400" is noise, not information.
-            .onChange(of: store.turns.count) { _, _ in
-                guard !scrolledAway else {
-                    pendingCount += 1
-                    return
-                }
-                proxy.scrollTo(tailId(store), anchor: .bottom)
-            }
-            .overlay(alignment: .top) {
-                ConnectionNotice(connection: store.connection)
-            }
-            .overlay(alignment: .bottom) {
-                // Nothing to jump to in an empty conversation, whatever the
-                // geometry happened to report while the keyboard was animating.
-                //
-                // Gated on intent for the same reason following is: while an
-                // answer streams, the geometry reads "not at the bottom" on
-                // most frames simply because the content grew, and a pill over
-                // the last two lines of the answer someone is reading is the
-                // worst possible place to put one.
-                if !atBottom, scrolledAway, !store.turns.isEmpty || store.live != nil {
-                    JumpPill(count: pendingCount) {
-                        Haptics.tap()
-                        withAnimation(Motion.move) {
-                            proxy.scrollTo(tailId(store), anchor: .bottom)
-                        }
-                        atBottom = true
-                        pendingCount = 0
-                        scrolledAway = false
-                    }
-                }
-            }
-            .refreshable { await store.topUp() }
+        TranscriptBody(
+            store: store,
+            follow: follow,
+            editingSeq: editingSeq,
+            sizeClass: sizeClass,
+            onImage: { viewer = $0 },
+            onVideo: { playing = $0 },
+            onDocument: { opened = $0 },
+            onRegenerate: { regenerating = $0 },
+            onEdit: { editingSeq = $0.seq },
+            onCancelEdit: { editingSeq = nil },
+            onSubmitEdit: { turn, text in submitEdit(store, turn: turn, text: text) },
+            onPickModel: { showingModels = true }
+        )
+        .composerBar {
+            ComposerBar(
+                store: store,
+                composer: composer,
+                pickModel: { showingModels = true },
+                send: { submit(store) }
+            )
         }
-    }
-
-    private let bottomAnchor = "transcript.bottom"
-
-    /// What to scroll to when following the tail. **Not the sentinel.** The
-    /// bottom anchor is a 1pt view at the end of a `LazyVStack`, and a lazy stack
-    /// does not create views far outside the visible range — so with the keyboard
-    /// up and 140pt of answer hidden behind it, `scrollTo(bottomAnchor)` was
-    /// asking for an id that did not exist yet and silently did nothing. The last
-    /// *turn* is a large, realized view, and anchoring to its bottom lands in the
-    /// same place.
-    private func tailId(_ store: TranscriptStore) -> String {
-        if store.live != nil { return Turn.liveId }
-        return store.turns.last?.id ?? bottomAnchor
-    }
-
-    private func markAtBottom(_ isNear: Bool) {
-        atBottom = isNear
-        if isNear { pendingCount = 0 }
-    }
-
-    private var remainingSlots: Int {
-        max(0, (app.bootstrap?.limits.maxAttachmentsPerMessage ?? 8) - attachments.count)
-    }
-
-    private func modelName(_ store: TranscriptStore) -> String? {
-        guard let id = store.modelId, let bootstrap = app.bootstrap else { return nil }
-        return bootstrap.model(id)?.name
     }
 
     /// A rewind, so it behaves like sending rather than like editing a field:
@@ -414,27 +142,388 @@ struct TranscriptView: View {
     private func submitEdit(_ store: TranscriptStore, turn: Turn, text: String) {
         guard !text.isEmpty else { return }
         editingSeq = nil
-        atBottom = true
-        scrolledAway = false
-        scrollRequests += 1
+        follow.returnToTail()
         Haptics.tap()
         Task { await store.rerun(text: text, fromSeq: turn.seq, attachments: turn.attachmentIds) }
     }
 
     private func submit(_ store: TranscriptStore) {
-        let text = draft
-        let ids = attachments.map(\.id)
-        draft = ""
-        attachments = []
-        atBottom = true
-        scrolledAway = false
-        // Sending takes you to your own message. Setting `atBottom` is not
+        let text = composer.draft
+        let ids = composer.attachmentIds
+        composer.clear()
+        // Sending takes you to your own message. Marking the position is not
         // enough: the geometry callback can fire before the reply exists and put
-        // it straight back to false, which left the answer streaming below the
-        // fold behind a jump pill you had to tap to watch your own question.
-        scrollRequests += 1
+        // it straight back, which left the answer streaming below the fold
+        // behind a pill you had to tap to watch your own question.
+        follow.returnToTail()
         Haptics.tap()
         Task { await store.send(text: text, attachments: ids) }
+    }
+}
+
+// MARK: - The list
+
+/// The transcript itself. Reads `turns`, and the handful of flags that change
+/// when a run starts or ends — never the streaming turn, the draft or the
+/// scroll position.
+private struct TranscriptBody: View {
+    let store: TranscriptStore
+    let follow: ScrollFollow
+    let editingSeq: Int?
+    let sizeClass: UserInterfaceSizeClass?
+    var onImage: (ImageId) -> Void
+    var onVideo: (PlayingVideo) -> Void
+    var onDocument: (OpenedDocument) -> Void
+    var onRegenerate: (Turn) -> Void
+    var onEdit: (Turn) -> Void
+    var onCancelEdit: () -> Void
+    var onSubmitEdit: (Turn, String) -> Void
+    var onPickModel: () -> Void
+
+    private static let contentWidth: CGFloat = 768
+
+    var body: some View {
+        RenderLog.tick("TranscriptBody")
+        return ScrollViewReader { proxy in
+            // A `List`, not a `LazyVStack`, and the reason is measured.
+            //
+            // Sampling the app during a scroll put the main thread in
+            // `LazyStack.measureEstimates` and `LazySubviewPlacements.placeSubviews`
+            // — a lazy stack keeps a whole-content height by estimating every
+            // row it has not built, and re-derives placements across the list as
+            // it goes. With rows whose heights vary from one line to a screenful
+            // of code, that estimation is most of the frame: the heartbeat
+            // measured main-thread stalls of 150–185ms while scrolling.
+            //
+            // `List` has no whole-content-height concept at this level; it asks
+            // for the rows it needs and recycles the rest. The cost is that
+            // every row has to opt out of the styling below, which is a trade
+            // worth making exactly once, here.
+            List {
+                Group {
+                    header
+
+                    ForEach(store.turns) { turn in
+                        TurnView(
+                            turn: turn,
+                            citations: store.citations,
+                            isStreaming: false,
+                            isEditing: turn.role == .user && turn.seq == editingSeq,
+                            onImage: onImage,
+                            onVideo: onVideo,
+                            onDocument: onDocument,
+                            onApproval: { approval, ok in
+                                Task { await store.decide(approval, approved: ok) }
+                            },
+                            onRegenerate: onRegenerate,
+                            onEdit: store.isRunning ? nil : onEdit,
+                            onCancelEdit: onCancelEdit,
+                            onSubmitEdit: onSubmitEdit
+                        )
+                        .equatable()
+                        .id(turn.id)
+                    }
+
+                    PendingRow(store: store)
+                    LiveRow(store: store, onImage: onImage, onVideo: onVideo, onDocument: onDocument)
+                    ErrorRow(store: store, pickModel: onPickModel)
+
+                    // The tail-follow target of last resort. A 1pt view is
+                    // enough, and giving it the full width keeps it a real
+                    // layout element rather than something the list can collapse
+                    // away.
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 1)
+                        .id(TranscriptStore.bottomAnchor)
+                }
+                // Applied to the `Group`, which passes them to each row. This is
+                // the price of using a list for something that is not a list of
+                // rows: every one of them has to give back the separator, the
+                // background and the insets.
+                .frame(maxWidth: Self.contentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(
+                    top: Space.md,
+                    leading: sizeClass == .compact ? Space.lg : Space.xl,
+                    bottom: Space.md,
+                    trailing: sizeClass == .compact ? Space.lg : Space.xl
+                ))
+                .transcriptTypeSize()
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
+            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
+            // The two events the follow bit turns on. A drag hands control to
+            // the reader the instant it starts; coming to rest hands it back,
+            // but only if it came to rest at the bottom.
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .interacting:
+                    follow.beganDragging()
+                case .idle:
+                    follow.cameToRest()
+                default:
+                    break
+                }
+            }
+            // How far the content's bottom sits past the viewport's. This has to
+            // come from the scroll view itself: the composer is a `safeAreaBar`,
+            // so an outer `GeometryReader` measures a taller box than the one the
+            // content actually scrolls in, and the difference — about the height
+            // of the composer — is enough to make "at the bottom" always true and
+            // yank the view out from under someone reading.
+            //
+            // No `contentInsets` term: the composer's height is already laid out
+            // into `contentSize`. Adding it again put a permanent ~110pt offset
+            // on the reading.
+            .onScrollGeometryChange(for: TailReading.self) { geometry in
+                TailReading(
+                    content: geometry.contentSize.height,
+                    offset: geometry.contentOffset.y,
+                    container: geometry.containerSize.height
+                )
+            } action: { _, reading in
+                follow.report(reading)
+            }
+            .overlay(alignment: .top) { ConnectionNotice(store: store) }
+            .overlay(alignment: .bottom) { JumpPillOverlay(store: store, follow: follow, proxy: proxy) }
+            .overlay { TailFollower(store: store, follow: follow, proxy: proxy) }
+            .refreshable { await store.topUp() }
+        }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        // A transcript being read and an empty conversation are two different
+        // screens, and showing neither for the length of a round trip is what
+        // makes opening one feel like a stall.
+        if store.turns.isEmpty && !store.hasLive {
+            if store.isLoading {
+                HStack { Spacer(); Spinner(); Spacer() }
+                    .padding(.top, 80)
+            } else {
+                TranscriptWelcome()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 80)
+            }
+        }
+
+        if store.hasMoreHistory {
+            HStack { Spacer(); Spinner(); Spacer() }
+                .task { await store.pageBack() }
+        }
+    }
+}
+
+// MARK: - The rows that change on their own
+
+/// The streaming turn, and the only view in the app that reads `store.live`.
+///
+/// It being its own view is the point: `live` is republished twenty times a
+/// second, and every view that reads it is rebuilt that often. Keeping the read
+/// down here means a frame of the stream costs one turn instead of the whole
+/// transcript.
+private struct LiveRow: View {
+    let store: TranscriptStore
+    var onImage: (ImageId) -> Void
+    var onVideo: (PlayingVideo) -> Void
+    var onDocument: (OpenedDocument) -> Void
+
+    var body: some View {
+        if let live = store.live {
+            TurnView(
+                turn: live,
+                citations: store.citations,
+                isStreaming: true,
+                onImage: onImage,
+                onVideo: onVideo,
+                onDocument: onDocument,
+                onApproval: { approval, ok in
+                    Task { await store.decide(approval, approved: ok) }
+                }
+            )
+            .equatable()
+            .id(Turn.liveId)
+        } else if store.isRunning {
+            // Below the reader's own message, not instead of it: the pending
+            // bubble says "sent", this says "working".
+            ThinkingIndicator()
+        }
+    }
+}
+
+private struct PendingRow: View {
+    let store: TranscriptStore
+
+    var body: some View {
+        if let pending = store.pending {
+            PendingBubble(send: pending)
+        }
+    }
+}
+
+/// A run that failed, and what to do about it.
+///
+/// Retrying is `continueRun` rather than re-sending: the reader's message is
+/// already persisted, so what failed was the answer to it, and sending the text
+/// again would put the same question in the transcript twice.
+private struct ErrorRow: View {
+    let store: TranscriptStore
+    var pickModel: () -> Void
+
+    var body: some View {
+        if let error = store.error {
+            ErrorCard(
+                title: FailureKind(runError: error).title,
+                message: error,
+                actions: [
+                    .init("重试", systemImage: "arrow.clockwise") {
+                        Task { await store.continueRun() }
+                    },
+                    .init("换个模型", systemImage: "arrow.up.arrow.down", run: pickModel),
+                ]
+            )
+        }
+    }
+}
+
+/// Keeps the view at the end of a growing answer, and renders nothing.
+///
+/// Following has to happen on every published frame, so whatever watches for one
+/// is rebuilt twenty times a second — which is fine for a view whose body is a
+/// zero-sized `Color.clear`, and was not fine when it was the transcript. It
+/// watches `liveTick` rather than `live` for the same reason: an integer
+/// comparison instead of a deep comparison of every part of the turn.
+private struct TailFollower: View {
+    let store: TranscriptStore
+    let follow: ScrollFollow
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            // Following is one bit, and only a drag clears it. Geometry is not
+            // consulted here: it legitimately reads "not at the bottom" while
+            // the keyboard is animating or the composer inset is changing, and
+            // letting that stop the follow meant an answer could start streaming
+            // below the fold behind a pill.
+            .onChange(of: store.liveTick) { _, _ in
+                guard follow.isFollowing else { return }
+                proxy.scrollTo(store.tailId, anchor: .bottom)
+            }
+            .onChange(of: store.turns.count) { _, _ in
+                guard follow.noteArrival() else { return }
+                proxy.scrollTo(store.tailId, anchor: .bottom)
+            }
+            // A run finishing is the moment the answer is complete, and someone
+            // who was watching it should end up at the end of it.
+            .onChange(of: store.isRunning) { wasRunning, isRunning in
+                guard !isRunning, wasRunning, follow.isFollowing else { return }
+                Task { @MainActor in
+                    // After the top-up has replaced the live turn.
+                    try? await Task.sleep(for: .milliseconds(120))
+                    withAnimation(Motion.move) { proxy.scrollTo(store.tailId, anchor: .bottom) }
+                    follow.settleAtTail()
+                }
+            }
+            .onChange(of: follow.requests) { _, _ in
+                Task { @MainActor in
+                    // Two passes: the pending bubble first, then whatever the
+                    // reply turns out to be once it starts arriving.
+                    withAnimation(Motion.move) { proxy.scrollTo(store.tailId, anchor: .bottom) }
+                    try? await Task.sleep(for: .milliseconds(250))
+                    proxy.scrollTo(store.tailId, anchor: .bottom)
+                    follow.settleAtTail()
+                }
+            }
+    }
+}
+
+private struct JumpPillOverlay: View {
+    let store: TranscriptStore
+    let follow: ScrollFollow
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        // Nothing to jump to in an empty conversation, whatever the geometry
+        // happened to report while the keyboard was animating.
+        //
+        // Gated on intent for the same reason following is: while an answer
+        // streams, the geometry reads "not at the bottom" on most frames simply
+        // because the content grew, and a pill over the last two lines of the
+        // answer someone is reading is the worst possible place to put one.
+        if follow.isAway, !store.turns.isEmpty || store.hasLive {
+            JumpPill(count: follow.pendingCount) {
+                Haptics.tap()
+                withAnimation(Motion.move) {
+                    proxy.scrollTo(store.tailId, anchor: .bottom)
+                }
+                follow.returnToTail()
+            }
+        }
+    }
+}
+
+// MARK: - The composer
+
+/// Owns the draft, so typing invalidates this and not the transcript.
+private struct ComposerBar: View {
+    let store: TranscriptStore
+    @Bindable var composer: ComposerState
+    var pickModel: () -> Void
+    var send: () -> Void
+
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        ComposerView(
+            text: $composer.draft,
+            attachments: $composer.attachments,
+            isRunning: store.isRunning,
+            uploading: composer.uploading,
+            modelName: modelName,
+            send: send,
+            stop: { Task { await store.stop() } },
+            pickModel: pickModel,
+            attach: { composer.showingAttach = true }
+        )
+        .confirmationDialog("添加附件", isPresented: $composer.showingAttach, titleVisibility: .visible) {
+            Button("相册") { composer.pickingPhotos = true }
+            Button("文件") { composer.importing = true }
+            Button("取消", role: .cancel) {}
+        }
+        .photosPicker(
+            isPresented: $composer.pickingPhotos,
+            selection: $composer.photos,
+            maxSelectionCount: max(1, remainingSlots),
+            matching: .any(of: [.images, .videos])
+        )
+        .onChange(of: composer.photos) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await upload(photos: items); composer.photos = [] }
+        }
+        .fileImporter(
+            isPresented: $composer.importing,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            if case .success(let urls) = result { Task { await upload(urls: urls) } }
+        }
+    }
+
+    private var modelName: String? {
+        guard let id = store.modelId, let bootstrap = app.bootstrap else { return nil }
+        return bootstrap.model(id)?.name
+    }
+
+    private var remainingSlots: Int {
+        max(0, (app.bootstrap?.limits.maxAttachmentsPerMessage ?? 8) - composer.attachments.count)
     }
 
     private func upload(photos: [PhotosPickerItem]) async {
@@ -459,13 +548,13 @@ struct TranscriptView: View {
     private func upload(items: Int, load: (Int) async -> (Data, String, String)?) async {
         let cap = app.bootstrap?.limits.maxAttachmentsPerMessage ?? 8
         let maxBytes = app.bootstrap?.limits.maxUploadBytes ?? 50_000_000
-        let room = max(0, cap - attachments.count)
+        let room = max(0, cap - composer.attachments.count)
         if room == 0 {
             app.toast = Toast(message: "一条消息最多附带 \(cap) 个附件，请先移除一些", isError: true)
             return
         }
-        uploading = true
-        defer { uploading = false }
+        composer.uploading = true
+        defer { composer.uploading = false }
         for index in 0..<min(items, room) {
             guard let (data, name, mime) = await load(index) else { continue }
             if data.count > maxBytes {
@@ -473,8 +562,12 @@ struct TranscriptView: View {
                 continue
             }
             do {
-                let file = try await app.api.upload(data: data, filename: name, mime: mime, conversationId: id.raw)
-                attachments.append(DraftAttachment(id: file.id.raw, name: file.name, mime: file.mime))
+                let file = try await app.api.upload(
+                    data: data, filename: name, mime: mime, conversationId: store.id.raw
+                )
+                composer.attachments.append(
+                    DraftAttachment(id: file.id.raw, name: file.name, mime: file.mime)
+                )
             } catch let error as APIError {
                 app.handle(error)
             } catch {}
@@ -484,6 +577,38 @@ struct TranscriptView: View {
         }
     }
 }
+
+private struct TranscriptMenu: View {
+    let store: TranscriptStore
+    var pickModel: () -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                pickModel()
+            } label: {
+                Label("切换模型", systemImage: "arrow.up.arrow.down")
+            }
+            if store.isRunning {
+                Button(role: .destructive) {
+                    Task { await store.stop() }
+                } label: {
+                    Label("停止", systemImage: Symbols.stop)
+                }
+            } else {
+                Button {
+                    Task { await store.continueRun() }
+                } label: {
+                    Label("继续", systemImage: "arrow.forward")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+    }
+}
+
+// MARK: - Small pieces
 
 /// The first thing in an empty conversation. No suggestion chips: they date
 /// badly, they push the composer up, and on a single-user server the owner
@@ -527,90 +652,18 @@ struct TailReading: Equatable {
     var content: CGFloat = 0
     var offset: CGFloat = 0
     var container: CGFloat = 0
-    var insetTop: CGFloat = 0
-    var insetBottom: CGFloat = 0
 
     /// Nothing to scroll: the tail is on screen by definition.
     var isScrollable: Bool { content > container }
 
+    /// Content that does not fill the viewport reports a fixed `-1` rather than
+    /// an arithmetic result. There is nowhere to scroll, so the answer is "at the
+    /// bottom" by definition — and computing it instead let one transient layout
+    /// pass latch the pill on over an empty conversation, where it never got a
+    /// second reading to correct itself because nothing was ever scrolled.
     var distanceFromTail: CGFloat {
         guard isScrollable else { return -1 }
         return content - offset - container
-    }
-
-    var debug: String {
-        String(
-            format: "c=%.0f o=%.0f v=%.0f it=%.0f ib=%.0f d=%.0f",
-            content, offset, container, insetTop, insetBottom, distanceFromTail
-        )
-    }
-}
-
-private extension View {
-    /// Open at the tail, and *stay* at the tail as the answer grows.
-    ///
-    /// The second half is the part that cannot be done by hand. Following by
-    /// calling `scrollTo` on every published frame fails whenever the target is
-    /// a lazy view that has not been created yet — which is precisely the case
-    /// during streaming, where the growing turn is just off the bottom edge. iOS
-    /// 18's `.sizeChanges` anchor is the system doing it from inside the scroll
-    /// view, where the geometry is known and nothing has to be realised first.
-    @ViewBuilder
-    func transcriptScrollAnchors() -> some View {
-        if #available(iOS 18.0, *) {
-            defaultScrollAnchor(.bottom)
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
-        } else {
-            defaultScrollAnchor(.bottom)
-        }
-    }
-
-    /// Whether the reader is actively dragging the transcript, as opposed to the
-    /// content moving under them. Below iOS 18 there is no phase to observe, so
-    /// the transcript follows the tail unconditionally — the wrong default is
-    /// far less annoying that way round.
-    @ViewBuilder
-    func trackDragging(_ action: @escaping (Bool) -> Void) -> some View {
-        if #available(iOS 18.0, *) {
-            onScrollPhaseChange { _, phase in
-                action(phase == .interacting || phase == .decelerating)
-            }
-        } else {
-            self
-        }
-    }
-
-    /// Reports how far the content's bottom sits past the viewport's, from the
-    /// scroll view's own geometry. iOS 18 says this in one call; below that the
-    /// transcript falls back to whether its bottom sentinel is laid out, which
-    /// is coarser but never wrong in the dangerous direction.
-    @ViewBuilder
-    func trackTailDistance(_ action: @escaping (TailReading) -> Void) -> some View {
-        if #available(iOS 18.0, *) {
-            // No `contentInsets` term: the composer is a `safeAreaBar`, so its
-            // height is already laid out into `contentSize`. Adding it again put
-            // a permanent ~110pt offset on the reading.
-            //
-            // Content that does not fill the viewport reports a fixed `-1`
-            // rather than an arithmetic result. There is nowhere to scroll, so
-            // the answer is "at the bottom" by definition — and computing it
-            // instead let one transient layout pass latch the pill on over an
-            // empty conversation, where it never got a second reading to correct
-            // itself because nothing was ever scrolled.
-            onScrollGeometryChange(for: TailReading.self) { geometry in
-                TailReading(
-                    content: geometry.contentSize.height,
-                    offset: geometry.contentOffset.y,
-                    container: geometry.containerSize.height,
-                    insetTop: geometry.contentInsets.top,
-                    insetBottom: geometry.contentInsets.bottom
-                )
-            } action: { _, reading in
-                action(reading)
-            }
-        } else {
-            self
-        }
     }
 }
 
@@ -656,10 +709,10 @@ private struct PendingBubble: View {
 /// reader waits on an answer that is not coming. Glass and one line, because it
 /// is a status rather than a failure: nothing has gone wrong yet.
 private struct ConnectionNotice: View {
-    let connection: TranscriptStore.Connection
+    let store: TranscriptStore
 
     var body: some View {
-        if let notice = connection.notice {
+        if let notice = store.connection.notice {
             HStack(spacing: Space.xs) {
                 Spinner()
                 Text(notice)
@@ -768,11 +821,7 @@ private struct ModelPickerSheet: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(Color.bg)
-            .navigationTitle("模型")
-            .navigationBarTitleDisplayMode(.inline)
+            .formChrome("模型")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
@@ -817,4 +866,3 @@ private struct ModelPickerSheet: View {
         return provider?.name ?? model.providerId.raw
     }
 }
-

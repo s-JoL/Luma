@@ -72,41 +72,63 @@ struct ComposerView: View {
         }
     }
 
+    /// What is going with the message, shown as what it is.
+    ///
+    /// A picture used to be a 28pt square inside a capsule next to its filename,
+    /// which for a photo library named `photo.jpg` told the reader nothing at all
+    /// — the one thing that identifies an image is the image. Pictures are now
+    /// thumbnails big enough to recognise; documents keep their name, because for
+    /// a document that *is* the identifying thing.
     private var chips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
-                if uploading { Spinner() }
                 ForEach(attachments) { file in
-                    HStack(spacing: Space.xs) {
+                    Group {
                         if file.isImage {
-                            AuthedImage(imageId: ImageId(file.id), width: 80)
-                                .frame(width: 28, height: 28)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            AuthedImage(imageId: ImageId(file.id), width: 160, contentMode: .fill)
+                                .frame(width: 56, height: 56)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
                         } else {
-                            Image(systemName: "doc")
-                                .font(.caption)
-                                .foregroundStyle(Color.mutedFg)
+                            HStack(spacing: Space.xs) {
+                                Image(systemName: Symbols.document)
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.mutedFg)
+                                Text(file.name)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            .padding(.horizontal, Space.sm)
+                            .frame(height: 56)
+                            .frame(maxWidth: 150)
+                            .background(Color.secondaryFill, in: RoundedRectangle(cornerRadius: Radius.md))
                         }
-                        Text(file.name)
-                            .font(.caption)
-                            .lineLimit(1)
+                    }
+                    .overlay(alignment: .topTrailing) {
                         Button {
                             attachments.removeAll { $0.id == file.id }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption)
-                                .foregroundStyle(Color.mutedFg)
+                                .foregroundStyle(.white, .black.opacity(0.55))
                         }
                         .buttonStyle(.plain)
+                        .padding(3)
                         .accessibilityLabel("移除 \(file.name)")
                     }
-                    .padding(.leading, 4)
-                    .padding(.trailing, 6)
-                    .frame(height: 36)
-                    .background(Color.secondaryFill, in: Capsule())
+                }
+                if uploading {
+                    RoundedRectangle(cornerRadius: Radius.md)
+                        .fill(Color.secondaryFill)
+                        .frame(width: 56, height: 56)
+                        .overlay(Spinner())
                 }
             }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
         }
+        .frame(height: 62)
     }
 
     private var controls: some View {

@@ -2,8 +2,17 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Everything the agent can read: uploads, notes, and whatever the tools made.
+///
+/// Rewritten as a plain list with the platform's own search field. The previous
+/// version put search in a bordered card at the top of a scroll view, with a
+/// second text field for filtering by name inside a row that also held a heading,
+/// and two rows of chips under that — four controls competing before a single
+/// file was visible. Search belongs in the navigation bar, the filters belong in
+/// a menu, and the screen belongs to the files.
 struct FilesView: View {
     @Environment(AppModel.self) private var app
+
     @State private var query = ""
     @State private var note: NoteDraft?
     @State private var deleting: FileRecord?
@@ -16,23 +25,31 @@ struct FilesView: View {
     private var store: LibraryStore { app.library }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                searchCard
-                filters
-                if store.items.isEmpty, !store.isLoading {
-                    ContentUnavailableView("还没有文件", systemImage: Symbols.library, description: Text("上传、新建笔记，或从对话里生成"))
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, Space.xxl)
+        BrowseScreen(title: "文件") {
+            if let hits = store.hits {
+                searchResults(hits)
+            } else if store.items.isEmpty {
+                if store.isLoading {
+                    Section { HStack { Spacer(); Spinner(); Spacer() } }
                 } else {
-                    fileList
+                    EmptyRow(
+                        title: filtered ? "没有符合条件的文件" : "还没有文件",
+                        systemImage: Symbols.library,
+                        help: filtered ? "换个筛选条件看看。" : "上传一个、写一条笔记，或者让对话里的工具生成。"
+                    )
                 }
+            } else {
+                fileRows
             }
-            .padding(Space.lg)
         }
-        .background(Color.bg)
-        .navigationTitle("文件")
-        .navigationBarTitleDisplayMode(.inline)
+        // Server-side search, so it runs on submit rather than per keystroke —
+        // and clearing the field goes back to the browse list rather than
+        // searching for nothing.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜文件内容")
+        .onSubmit(of: .search) { Task { await search() } }
+        .onChange(of: query) { _, value in
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { store.clearSearch() }
+        }
         .toolbar { toolbar }
         .task { await store.load() }
         .refreshable { await store.load() }
@@ -50,12 +67,8 @@ struct FilesView: View {
                 Task { await save(draft: draft, name: name, text: text) }
             }
         }
-        .fullScreenCover(item: $zoom) { item in
-            ImageViewer(imageId: item.imageId)
-        }
-        .fullScreenCover(item: $playing) { item in
-            VideoViewer(videoId: item.videoId)
-        }
+        .fullScreenCover(item: $zoom) { item in ImageViewer(imageId: item.imageId) }
+        .fullScreenCover(item: $playing) { item in VideoViewer(videoId: item.videoId) }
         .alert("删除文件", isPresented: .constant(deleting != nil), presenting: deleting) { file in
             Button("取消", role: .cancel) { deleting = nil }
             Button("删除", role: .destructive) {
@@ -63,9 +76,13 @@ struct FilesView: View {
                 deleting = nil
             }
         } message: { file in
-            Text("「\(file.name)」会从图书馆里去掉。")
+            Text("「\(file.name)」会从文件库里去掉，索引也一并删除。")
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(
+            isPresented: $importing,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
             if case .success(let urls) = result { Task { await upload(urls: urls) } }
         }
         .onChange(of: photos) { _, items in
@@ -74,131 +91,146 @@ struct FilesView: View {
         }
     }
 
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            if busy { Spinner() }
-            Button {
-                note = NoteDraft(fileId: nil, name: "未命名.md", text: "")
-            } label: {
-                Label("新建", systemImage: "square.and.pencil")
+    // MARK: Rows
+
+    @ViewBuilder
+    private var fileRows: some View {
+        Section {
+            ForEach(store.items) { file in
+                FileRow(file: file)
+                    .contentShape(Rectangle())
+                    .onTapGesture { open(file) }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) { deleting = file } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
+                    .contextMenu {
+                        if file.isText {
+                            Button { open(file) } label: { Label("编辑", systemImage: "pencil") }
+                        }
+                        if file.embeddingStatus == .failed || file.embeddingStatus == .none {
+                            Button {
+                                Task { try? await store.reindex(file.id) }
+                            } label: {
+                                Label("重新索引", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        Button(role: .destructive) { deleting = file } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
             }
-            PhotosPicker(selection: $photos, maxSelectionCount: 8, matching: .any(of: [.images, .videos])) {
-                Label("相册", systemImage: "photo.on.rectangle")
-            }
-            Button { importing = true } label: {
-                Label("上传", systemImage: "square.and.arrow.up")
-            }
+        } header: {
+            Text(headerLabel).textCase(nil)
         }
     }
 
-    private var searchCard: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            Text("在文件里搜")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
-            HStack {
-                TextField("关键词或一句话", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await search() } }
-                Button("搜索") { Task { await search() } }
-                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if store.isSearching { Spinner() }
-            if let hits = store.hits {
-                if hits.isEmpty {
-                    Text("没有命中任何片段。").font(.subheadline).foregroundStyle(.secondary)
-                } else {
-                    ForEach(hits) { hit in
-                        VStack(alignment: .leading, spacing: Space.xs) {
-                            HStack {
-                                Badge(text: hit.matchType, tone: .neutral)
-                                Text(hit.name).font(.subheadline.weight(.medium))
-                                Spacer()
-                                Text("片段 \(hit.chunk)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text(hit.excerpt.prefix(280))
-                                .font(.caption)
+    @ViewBuilder
+    private func searchResults(_ hits: [FileHit]) -> some View {
+        if hits.isEmpty {
+            EmptyRow(
+                title: "没有命中",
+                systemImage: "magnifyingglass",
+                help: "换个说法试试，语义检索对整句比对关键词更擅长。"
+            )
+        } else {
+            Section {
+                ForEach(hits) { hit in
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        HStack(spacing: Space.xs) {
+                            Text(hit.name)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                            Badge(text: hit.matchType)
+                            Spacer()
+                            Text("片段 \(hit.chunk)")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(Space.md)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.mutedFill, in: RoundedRectangle(cornerRadius: Radius.md))
+                        Text(hit.excerpt.prefix(280))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, 2)
                 }
+            } header: {
+                Text("命中 \(hits.count) 个片段").textCase(nil)
             }
         }
-        .padding(Space.lg)
-        .background(Color.card, in: RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(Color.hairline, lineWidth: 1))
     }
 
-    private var filters: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack {
-                Text("文件（\(store.total)）").font(.headline)
-                Spacer()
-                TextField("按文件名筛选", text: Binding(
-                    get: { app.library.needle },
-                    set: { app.library.needle = $0 }
-                ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
-                    .onSubmit { Task { await store.load() } }
-            }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.sm) {
-                    kindChip("all", "全部", store.facets.kindCount.all)
-                    kindChip("docs", "文档", store.facets.kindCount.docs)
-                    kindChip("images", "图片", store.facets.kindCount.images)
-                    kindChip("videos", "视频", store.facets.kindCount.videos)
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            if busy { Spinner() }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Picker("类型", selection: Binding(get: { store.kind }, set: { store.kind = $0 })) {
+                    Text("全部（\(store.facets.kindCount.all)）").tag("all")
+                    Text("文档（\(store.facets.kindCount.docs)）").tag("docs")
+                    Text("图片（\(store.facets.kindCount.images)）").tag("images")
+                    Text("视频（\(store.facets.kindCount.videos)）").tag("videos")
                 }
-            }
-            if !store.facets.sources.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Space.sm) {
-                        sourceChip("all", "全部来源")
+                if !store.facets.sources.isEmpty {
+                    Picker("来源", selection: Binding(get: { store.source }, set: { store.source = $0 })) {
+                        Text("全部来源").tag("all")
                         ForEach(store.facets.sources) { row in
-                            sourceChip(row.id, FileSourceLabel.name(row.id), row.count)
+                            Text("\(FileSourceLabel.name(row.id))（\(row.count)）").tag(row.id)
                         }
                     }
                 }
+            } label: {
+                Label("筛选", systemImage: filtered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
             }
+            .accessibilityIdentifier("files.filter")
         }
-    }
-
-    private var fileList: some View {
-        LazyVStack(spacing: Space.sm) {
-            ForEach(store.items) { file in
-                FileRow(file: file) {
-                    if file.isImage { zoom = ZoomedImage(file.id.raw) }
-                    else if file.isVideo { playing = PlayingVideo(file.id.raw) }
-                    else if file.isText { Task { await openNote(file) } }
-                } onDelete: {
-                    deleting = file
-                } onReindex: {
-                    Task { try? await store.reindex(file.id) }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button {
+                    note = NoteDraft(fileId: nil, name: "未命名.md", text: "")
+                } label: {
+                    Label("写一条笔记", systemImage: "square.and.pencil")
                 }
+                Button { importing = true } label: {
+                    Label("从文件上传", systemImage: "folder")
+                }
+            } label: {
+                Label("添加", systemImage: "plus")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            PhotosPicker(selection: $photos, maxSelectionCount: 8, matching: .any(of: [.images, .videos])) {
+                Label("从相册", systemImage: "photo.on.rectangle")
             }
         }
     }
 
-    private func kindChip(_ id: String, _ label: String, _ count: Int) -> some View {
-        Button { store.kind = id } label: {
-            Chip(label: label, count: count, isSelected: store.kind == id)
-        }
-        .buttonStyle(.plain)
+    // MARK: State
+
+    private var filtered: Bool { store.kind != "all" || store.source != "all" }
+
+    private var headerLabel: String {
+        filtered ? "\(store.items.count) / \(store.total) 个文件" : "\(store.total) 个文件"
     }
 
-    private func sourceChip(_ id: String, _ label: String, _ count: Int? = nil) -> some View {
-        Button { store.source = id } label: {
-            Chip(label: label, count: count, isSelected: store.source == id)
+    // MARK: Actions
+
+    private func open(_ file: FileRecord) {
+        if file.isImage {
+            zoom = ZoomedImage(file.id.raw)
+        } else if file.isVideo {
+            playing = PlayingVideo(file.id.raw, poster: nil)
+        } else if file.isText {
+            Task { await openNote(file) }
         }
-        .buttonStyle(.plain)
     }
 
     private func search() async {
-        do { try await store.search(query) }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do { try await store.search(trimmed) }
         catch let error as APIError { app.handle(error) }
         catch {}
     }
@@ -207,8 +239,9 @@ struct FilesView: View {
         do {
             let body = try await store.fileText(file.id)
             note = NoteDraft(fileId: file.id, name: body.name, text: body.text)
-        } catch let error as APIError { app.handle(error) }
-        catch {}
+        } catch let error as APIError {
+            app.handle(error)
+        } catch {}
     }
 
     private func save(draft: NoteDraft, name: String, text: String) async {
@@ -219,9 +252,10 @@ struct FilesView: View {
                 try await store.createNote(name: name, text: text)
             }
             note = nil
-            app.note("已保存")
-        } catch let error as APIError { app.handle(error) }
-        catch {}
+            Haptics.success()
+        } catch let error as APIError {
+            app.handle(error)
+        } catch {}
     }
 
     private func remove(_ file: FileRecord) async {
@@ -237,7 +271,8 @@ struct FilesView: View {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? Data(contentsOf: url) else { continue }
-            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
             do { try await store.upload(data: data, filename: url.lastPathComponent, mime: mime) }
             catch let error as APIError { app.handle(error) }
             catch {}
@@ -249,68 +284,69 @@ struct FilesView: View {
         defer { busy = false }
         for item in photos {
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-            let filename = "photo.jpg"
-            let mime = "image/jpeg"
-            do { try await store.upload(data: data, filename: filename, mime: mime) }
+            do { try await store.upload(data: data, filename: "photo.jpg", mime: "image/jpeg") }
             catch let error as APIError { app.handle(error) }
             catch {}
         }
     }
 }
 
+// MARK: - Rows
+
 private struct FileRow: View {
     let file: FileRecord
-    var onOpen: () -> Void
-    var onDelete: () -> Void
-    var onReindex: () -> Void
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: Space.md) {
-                thumb
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(file.name).font(.body.weight(.medium)).lineLimit(1)
-                    Text("\(Format.bytes(file.bytes)) · \(FileSourceLabel.name(file.source))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Badge(text: file.embeddingStatus.label, tone: badgeTone)
+        HStack(spacing: Space.md) {
+            thumbnail
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.name)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(Space.md)
-            .background(Color.card, in: RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay(RoundedRectangle(cornerRadius: Radius.lg).strokeBorder(Color.hairline, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            if file.isText { Button("编辑", action: onOpen) }
-            if file.embeddingStatus == .failed || file.embeddingStatus == .none {
-                Button("重新索引", action: onReindex)
+            Spacer(minLength: Space.sm)
+            // Only when it is worth saying. "已索引" on every row is decoration;
+            // "索引中" and "失败" are the two the reader can act on.
+            if let tone = noteworthy {
+                Badge(text: file.embeddingStatus.label, tone: tone)
             }
-            Button("删除", role: .destructive, action: onDelete)
         }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private var thumb: some View {
+    private var thumbnail: some View {
         if file.isImage {
-            AuthedImage(imageId: ImageId(file.id.raw), width: 80)
-                .frame(width: 48, height: 48)
+            AuthedImage(imageId: ImageId(file.id.raw), width: 160, contentMode: .fill)
+                .frame(width: 44, height: 44)
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
         } else {
-            Image(systemName: file.isVideo ? "film" : "doc.text")
-                .foregroundStyle(Color.mutedFg)
-                .frame(width: 48, height: 48)
-                .background(Color.mutedFill, in: RoundedRectangle(cornerRadius: Radius.sm))
+            RoundedRectangle(cornerRadius: Radius.sm)
+                .fill(Color.mutedFill)
+                .frame(width: 44, height: 44)
+                .overlay(
+                    Image(systemName: file.isVideo ? "film" : Symbols.document)
+                        .foregroundStyle(Color.mutedFg)
+                )
         }
     }
 
-    private var badgeTone: Badge.Tone {
+    private var subtitle: String {
+        var parts = [Format.bytes(file.bytes), FileSourceLabel.name(file.source)]
+        if let pages = file.pageCount, pages > 0 { parts.append("\(pages) 页") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var noteworthy: Badge.Tone? {
         switch file.embeddingStatus {
-        case .ready, .indexed: .ok
         case .pending: .warn
         case .failed: .danger
-        case .none: .neutral
+        case .ready, .indexed, .none: nil
         }
     }
 }
@@ -325,6 +361,7 @@ struct NoteDraft: Identifiable {
 private struct NoteEditor: View {
     let draft: NoteDraft
     var onSave: (String, String) -> Void
+
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var text: String
@@ -338,25 +375,31 @@ private struct NoteEditor: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: Space.md) {
+            // Not a form: this is a document, and a document editor should be
+            // the page rather than a field on it.
+            VStack(spacing: 0) {
                 TextField("文件名", text: $name)
-                    .textFieldStyle(.roundedBorder)
+                    .exactEntry()
+                    .font(.headline)
+                    .padding(.horizontal, Space.lg)
+                    .padding(.vertical, Space.md)
+                Divider()
                 TextEditor(text: $text)
                     .font(.body)
                     .scrollContentBackground(.hidden)
-                    .padding(Space.sm)
-                    .background(Color.card, in: RoundedRectangle(cornerRadius: Radius.md))
+                    .padding(.horizontal, Space.md)
             }
-            .padding(Space.lg)
             .background(Color.bg)
-            .navigationTitle(draft.fileId == nil ? "新建文档" : "编辑")
+            .navigationTitle(draft.fileId == nil ? "新建笔记" : "编辑")
             .navigationBarTitleDisplayMode(.inline)
+            .dismissableKeyboard()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { onSave(name, text) }
+                        .fontWeight(.semibold)
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

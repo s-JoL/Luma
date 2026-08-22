@@ -5,7 +5,7 @@ import SwiftUI
 /// A15.
 struct TurnView: View, Equatable {
     let turn: Turn
-    let citations: [String: Citation]
+    let citations: CitationIndex
     let isStreaming: Bool
     /// The reader is rewriting this turn, so the bubble is an editor instead.
     var isEditing = false
@@ -22,11 +22,12 @@ struct TurnView: View, Equatable {
         lhs.turn == rhs.turn
             && lhs.isStreaming == rhs.isStreaming
             && lhs.isEditing == rhs.isEditing
-            && lhs.citations.count == rhs.citations.count
+            && lhs.citations == rhs.citations
     }
 
     var body: some View {
-        content.contextMenu { actions }
+        RenderLog.tick(isStreaming ? "TurnView.live" : "TurnView.settled")
+        return content.contextMenu { actions }
     }
 
     @ViewBuilder
@@ -129,15 +130,19 @@ struct TurnView: View, Equatable {
     private var assistantTurn: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             ForEach(Array(turn.parts.enumerated()), id: \.offset) { index, part in
-                partView(part, isLast: index == turn.parts.count - 1)
+                partView(part, at: index, isLast: index == turn.parts.count - 1)
             }
             if let error = turn.error {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(Color.danger)
-                    .padding(Space.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: Radius.lg))
+                ErrorCard(
+                    title: FailureKind(runError: error).title,
+                    message: error,
+                    // A settled turn that failed is regenerated, not continued:
+                    // the answer it holds is the failure, and continuing would
+                    // append to it rather than replace it.
+                    actions: onRegenerate.map { regenerate in
+                        [.init("重新生成", systemImage: "arrow.clockwise") { regenerate(turn) }]
+                    } ?? []
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,12 +150,12 @@ struct TurnView: View, Equatable {
     }
 
     @ViewBuilder
-    private func partView(_ part: Part, isLast: Bool) -> some View {
+    private func partView(_ part: Part, at index: Int, isLast: Bool) -> some View {
         switch part {
         case .text(let text):
-            prose(text, isTail: isLast)
+            prose(text, at: index, isTail: isLast)
         case .thinking(let text):
-            ThinkingBlock(text: text, autoExpanded: isStreaming && turn.parts.count == 1)
+            ThinkingBlock(text: text, isStreaming: isStreaming)
         case .image(let id):
             TranscriptPicture(imageId: id) { onImage?(id) }
         case .video(let id, let poster, _):
@@ -176,18 +181,29 @@ struct TurnView: View, Equatable {
 
     /// Only the final text part of a streaming turn can hold a half-written
     /// delimiter, and only its tail block is re-parsed per frame.
+    ///
+    /// The settled side is a *list* of blocks rather than one document. That is
+    /// what makes a completed paragraph cost one paragraph: rendered as a single
+    /// document it re-parsed the whole answer from the top every time the split
+    /// point moved, which is the quadratic that made long answers stutter.
     @ViewBuilder
-    private func prose(_ text: String, isTail: Bool) -> some View {
+    private func prose(_ text: String, at index: Int, isTail: Bool) -> some View {
         if isStreaming && isTail {
-            let (settled, tail) = ProseSplit.split(text, streaming: true)
+            // Neither half of the answer is built here. The settled blocks come
+            // from a memo keyed on how far the settled prose reaches, and only
+            // the tail — one unfinished paragraph — is turned into a string.
+            let cut = ProseSplit.cut(text)
+            let blocks = MarkdownCache.blocks(
+                of: text, upTo: cut, stream: "\(turn.id)#\(turn.generation)#\(index)"
+            )
+            let tail = String(text[cut...])
             VStack(alignment: .leading, spacing: 0) {
-                if !settled.isEmpty {
-                    MarkdownText(text: settled, citations: citations, onImage: onImage)
-                        .equatable()
-                }
+                ProseBlockList(blocks: blocks, citations: citations, onImage: onImage)
                 // The caret sits on the last line rather than under the
                 // paragraph, so it reads as the writing position it is.
-                StreamingText(text: tail, citations: citations, showsCaret: true).equatable()
+                StreamingText(text: tail, showsCaret: true)
+                    .equatable()
+                    .padding(.top, blocks.isEmpty || tail.isEmpty ? 0 : ProseBlock.Kind.paragraph.leadingSpace)
             }
         } else {
             MarkdownText(text: text, citations: citations, onImage: onImage).equatable()
@@ -260,12 +276,63 @@ private struct BubbleShape: Shape {
     }
 }
 
+/// The model's reasoning, in a box whose height does not depend on how much of it
+/// has arrived.
+///
+/// It used to expand while thinking was the only thing in the turn and collapse
+/// itself the moment the first text delta landed. Both halves were wrong. The
+/// collapse yanked the answer up the screen mid-stream, and before that the box
+/// grew with every reasoning token — so the row kept changing height underneath a
+/// lazy stack that had already measured it, which is the other way a transcript
+/// loses its place while streaming.
+///
+/// While the run is live the box is a fixed window onto the *end* of the
+/// reasoning, which is the part worth reading and the part that is still moving.
+/// Nothing above it ever shifts. Once the run settles it collapses to a line the
+/// reader can open deliberately, and a deliberate expansion is allowed to change
+/// the layout because the reader asked for it.
 private struct ThinkingBlock: View {
     let text: String
-    let autoExpanded: Bool
+    let isStreaming: Bool
+
     @State private var expanded = false
 
+    /// Tall enough to read a thought, short enough not to push the answer off
+    /// screen. Fixed, so the row is measured once.
+    private static let windowHeight: CGFloat = 132
+    /// What can fit in that window twice over. Truncating before layout keeps a
+    /// long reasoning trace from being laid out in full just to be clipped.
+    private static let windowCharacters = 400
+
     var body: some View {
+        if isStreaming {
+            live
+        } else {
+            settled
+        }
+    }
+
+    private var live: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            label
+            Text(tail)
+                .font(.callout)
+                .foregroundStyle(Color.mutedFg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Bottom-aligned in a fixed box: new text arrives at the last
+                // line and the earlier lines slide up inside the window.
+                .frame(height: Self.windowHeight, alignment: .bottom)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+                .clipped()
+                .mask(fade)
+                .background(Color.mutedFill.opacity(0.4), in: RoundedRectangle(cornerRadius: Radius.lg))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在思考")
+    }
+
+    private var settled: some View {
         DisclosureGroup(isExpanded: $expanded) {
             Text(text)
                 .font(.callout)
@@ -275,16 +342,34 @@ private struct ThinkingBlock: View {
                 .padding(Space.md)
                 .background(Color.mutedFill.opacity(0.4), in: RoundedRectangle(cornerRadius: Radius.lg))
         } label: {
-            Text("思考")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            label
         }
-        .onAppear { expanded = autoExpanded }
-        // Collapses when the first text delta lands, so a long silent think
-        // shows something and a finished one gets out of the way.
-        .onChange(of: autoExpanded) { _, value in
-            if !value { expanded = false }
-        }
+    }
+
+    private var label: some View {
+        Text("思考")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// The window shows the end of the reasoning; the top edge fades rather than
+    /// cutting a line in half, which is what says "there is more above" without
+    /// a control that promises something to tap.
+    private var fade: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .black, location: 0.22),
+                .init(color: .black, location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var tail: String {
+        guard text.count > Self.windowCharacters else { return text }
+        return String(text.suffix(Self.windowCharacters))
     }
 }
 

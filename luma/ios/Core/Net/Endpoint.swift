@@ -123,6 +123,10 @@ extension Endpoint {
         .init(path: "/conversations/\(id.raw)/approvals")
     }
 
+    /// Everything waiting, across every conversation. See `ApprovalsStore` for
+    /// why a phone needs this and a browser tab does not.
+    static func pendingApprovals() -> Endpoint { .init(path: "/approvals") }
+
     static func decideApproval(_ id: ApprovalId, approved: Bool) throws -> Endpoint {
         .init(
             method: "POST", path: "/approvals/\(id.raw)",
@@ -177,6 +181,20 @@ extension Endpoint {
     /// `APIClient.mediaSource`.
     static func video(_ id: VideoId) -> Endpoint { .init(path: "/videos/\(id.raw)") }
 
+    /// The full-size bytes, as opposed to the width-constrained thumbnail
+    /// `ImageLoader` asks for. What gets saved to the camera roll.
+    static func image(_ id: ImageId) -> Endpoint { .init(path: "/images/\(id.raw)") }
+
+    /// What an asset was made from. Answered for uploads too, which is why the
+    /// reply's `job` is optional rather than the route 404ing.
+    static func imageProvenance(_ id: ImageId) -> Endpoint {
+        .init(path: "/images/\(id.raw)/provenance")
+    }
+
+    static func videoProvenance(_ id: VideoId) -> Endpoint {
+        .init(path: "/videos/\(id.raw)/provenance")
+    }
+
     // MARK: Memory
 
     static func memory() -> Endpoint { .init(path: "/memory") }
@@ -227,12 +245,33 @@ extension Endpoint {
         .init(method: "PUT", path: "/capabilities/secrets/\(name)", body: try JSON.encode(["value": value]))
     }
 
+    static func deleteSecret(_ name: String) -> Endpoint {
+        .init(method: "DELETE", path: "/capabilities/secrets/\(name)")
+    }
+
     static func prompts() -> Endpoint { .init(path: "/prompts") }
 
     static func promptDefaults() -> Endpoint { .init(path: "/prompts/defaults") }
 
     static func savePrompts(_ prompts: PromptSettings) throws -> Endpoint {
         .init(method: "PUT", path: "/prompts", body: try JSON.encode(prompts))
+    }
+
+    static func providers() -> Endpoint { .init(path: "/providers") }
+
+    static func createProvider(_ input: ProviderInput) throws -> Endpoint {
+        .init(method: "POST", path: "/providers", body: try JSON.encode(input))
+    }
+
+    static func updateProvider(_ id: ProviderId, _ input: ProviderInput) throws -> Endpoint {
+        .init(method: "PATCH", path: "/providers/\(id.raw)", body: try JSON.encode(input))
+    }
+
+    /// Takes every model that named this provider with it: `models.provider_id`
+    /// cascades. The confirmation says so, because the rows disappear from a
+    /// screen the reader is not looking at.
+    static func deleteProvider(_ id: ProviderId) -> Endpoint {
+        .init(method: "DELETE", path: "/providers/\(id.raw)")
     }
 
     static func setProviderKey(_ id: ProviderId, value: String) throws -> Endpoint {
@@ -243,8 +282,56 @@ extension Endpoint {
         .init(method: "DELETE", path: "/providers/\(id.raw)/key")
     }
 
+    /// The provider's own catalogue, asked for live. Refused with `422` while the
+    /// provider has no key, which is a state the screen can fix rather than an
+    /// error worth a toast.
+    static func discoverModels(_ id: ProviderId) -> Endpoint {
+        .init(path: "/providers/\(id.raw)/models")
+    }
+
+    static func models() -> Endpoint { .init(path: "/models") }
+
+    static func createModel(_ input: ModelInput) throws -> Endpoint {
+        .init(method: "POST", path: "/models", body: try JSON.encode(input))
+    }
+
+    static func updateModel(_ id: ModelId, _ input: ModelInput) throws -> Endpoint {
+        .init(method: "PATCH", path: "/models/\(id.raw)", body: try JSON.encode(input))
+    }
+
+    static func deleteModel(_ id: ModelId) -> Endpoint {
+        .init(method: "DELETE", path: "/models/\(id.raw)")
+    }
+
+    /// Several models from a provider's catalogue in one write, because the
+    /// tedious part of setting an aggregator up is doing it a dialog at a time.
+    static func importModels(_ input: ModelImport) throws -> Endpoint {
+        .init(method: "POST", path: "/models/bulk", body: try JSON.encode(input))
+    }
+
     static func setDefaultModel(_ id: ModelId) throws -> Endpoint {
         .init(method: "PUT", path: "/models/default", body: try JSON.encode(["modelId": id.raw]))
+    }
+
+    static func setGenerationDefaults(_ input: GenerationDefaultsInput) throws -> Endpoint {
+        .init(method: "PUT", path: "/models/generation-defaults", body: try JSON.encode(input))
+    }
+
+    /// The configured servers alongside what each one currently is. `bootstrap`
+    /// carries the status only, which is enough to show a list and not enough to
+    /// edit one back.
+    static func mcpServers() -> Endpoint { .init(path: "/mcp/servers") }
+
+    static func createMcpServer(_ input: McpServerInput) throws -> Endpoint {
+        .init(method: "POST", path: "/mcp/servers", body: try JSON.encode(input))
+    }
+
+    static func updateMcpServer(_ id: String, _ input: McpServerInput) throws -> Endpoint {
+        .init(method: "PATCH", path: "/mcp/servers/\(id)", body: try JSON.encode(input))
+    }
+
+    static func deleteMcpServer(_ id: String) -> Endpoint {
+        .init(method: "DELETE", path: "/mcp/servers/\(id)")
     }
 
     /// Rebuilds every MCP connection. The reply carries the new status, but the

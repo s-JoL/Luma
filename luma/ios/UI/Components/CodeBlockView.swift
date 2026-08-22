@@ -24,11 +24,7 @@ struct CodeBlockView: View {
                     .padding(.vertical, Space.md)
             }
         }
-        .background(Color.mutedFill, in: RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.lg)
-                .strokeBorder(Color.hairline.opacity(0.7), lineWidth: 1)
-        )
+        .contentCard(.sunken)
     }
 
     private var header: some View {

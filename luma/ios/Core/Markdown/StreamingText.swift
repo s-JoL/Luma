@@ -9,7 +9,6 @@ import SwiftUI
 /// `MarkdownText` once and are never re-parsed; only this one runs at 20 Hz.
 struct StreamingText: View, Equatable {
     let text: String
-    let citations: [String: Citation]
     var showsCaret = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -69,11 +68,32 @@ struct StreamingText: View, Equatable {
 /// block renderer draws it straight away instead, which is also when the web
 /// client draws it.
 enum ProseSplit {
+    /// Where the settled prose ends. Returned as an index rather than as two
+    /// strings because the streaming caller asks on every published frame, and
+    /// building the settled half is the expensive part — it copies the whole
+    /// answer so far, twenty times a second, to hand back something it almost
+    /// always already has.
+    static func cut(_ text: String) -> String.Index {
+        // Searched backwards, so it stops at the last blank line rather than
+        // walking the answer.
+        let block = text.range(of: "\n\n", options: .backwards)?.upperBound ?? text.startIndex
+
+        // A picture can only move the cut if it is *after* the last blank line —
+        // one before it is already settled either way. So the search is bounded
+        // to the tail, which is one unfinished paragraph rather than the whole
+        // answer. Unbounded, this was the single most expensive thing the
+        // transcript did per frame: a case-insensitive search that has to scan
+        // everything written so far before it can report that the answer, as is
+        // true of nearly every answer, contains no generated picture at all.
+        guard text[block...].range(of: "image://", options: .caseInsensitive) != nil,
+              let picture = InlineImages.endOfLastPicture(in: text)
+        else { return block }
+        return max(block, picture)
+    }
+
     static func split(_ text: String, streaming: Bool) -> (settled: String, tail: String) {
         guard streaming else { return (text, "") }
-        let block = text.range(of: "\n\n", options: .backwards)?.upperBound
-        let picture = InlineImages.endOfLastPicture(in: text)
-        guard let cut = [block, picture].compactMap({ $0 }).max() else { return ("", text) }
+        let cut = cut(text)
         return (String(text[..<cut]), String(text[cut...]))
     }
 }

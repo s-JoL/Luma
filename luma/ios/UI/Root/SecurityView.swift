@@ -24,11 +24,7 @@ struct SecurityView: View {
                 exposureSection(state)
             }
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color.bg)
-        .navigationTitle("安全")
-        .navigationBarTitleDisplayMode(.inline)
+        .formChrome("安全")
         .overlay {
             if state == nil { ProgressView() }
         }
@@ -351,10 +347,7 @@ private struct StepUpSheet: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Color.bg)
-            .navigationTitle(request.title)
-            .navigationBarTitleDisplayMode(.inline)
+            .formChrome(request.title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { finish(nil) }.disabled(busy)

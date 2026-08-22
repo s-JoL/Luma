@@ -32,6 +32,16 @@ struct Turn: Sendable, Equatable, Identifiable {
     let role: Role
     var parts: [Part]
     var error: String?
+    /// Which live turn this is, counted from launch.
+    ///
+    /// The live turn's `id` is a constant, which is what the transcript wants —
+    /// one row that keeps its identity as the answer grows. The streaming render
+    /// cache wants the opposite: it memoises on the length of the settled prose,
+    /// which is only a safe key while the prose can do nothing but grow. A rewind
+    /// replaces the live turn with different prose under the same id, so this
+    /// distinguishes them. Zero for everything read back from the message log,
+    /// which is settled and never memoised this way.
+    var generation: Int = 0
 
     enum Role: Sendable, Equatable { case user, assistant }
 

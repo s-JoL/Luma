@@ -60,15 +60,23 @@ final class GalleryTests: XCTestCase {
 
         send.tap()
 
-        // Two waits, not one. The POST is in flight for a moment after the tap,
-        // and a loop that only waits for "发送" exits immediately on the label it
-        // started with — which captured an empty transcript and still passed.
-        XCTAssertTrue(waitFor(deadline: 20) { send.label == "停止" }, "the run should start")
+        // Started, or already answered.
+        //
+        // A loop that only waits for "发送" exits immediately on the label it
+        // started with and photographs an empty transcript. But "停止" is
+        // transient — its duration is the model's latency, and against a local
+        // stub it can be gone before a poll lands — and the stub picks between
+        // several canned replies depending on the conversation, so waiting for
+        // particular words photographs the fixture rather than the app. Prose
+        // appearing at all is the signal, and it cannot be true before the tap:
+        // this conversation was empty a moment ago.
+        XCTAssertTrue(
+            waitFor(deadline: 60) { send.label == "停止" || hasProse(app) },
+            "the run should start"
+        )
 
-        // Mid-stream, so the caret and the streaming tail are on the record.
-        _ = app.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS %@", "先定结构")
-        ).firstMatch.waitForExistence(timeout: 30)
+        // Mid-stream if it is still going, settled if it was quick. Either way
+        // there is something on the record.
         capture("05-streaming", app)
 
         XCTAssertTrue(waitFor(deadline: 120) { send.label == "发送" }, "the run should settle")
@@ -96,6 +104,15 @@ final class GalleryTests: XCTestCase {
 
         app.tabBars.buttons["设置"].tap()
         capture("11-settings", app)
+    }
+
+    /// Whether the transcript is showing any answer prose yet. Anything below
+    /// the navigation bar with real height that is not the composer's
+    /// placeholder counts.
+    private func hasProse(_ app: XCUIApplication) -> Bool {
+        app.staticTexts.allElementsBoundByIndex.contains { element in
+            element.exists && element.frame.height > 4 && element.frame.minY > 150
+        }
     }
 
     private func waitFor(deadline seconds: TimeInterval, _ condition: () -> Bool) -> Bool {

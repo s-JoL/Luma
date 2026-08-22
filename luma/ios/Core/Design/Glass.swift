@@ -131,28 +131,13 @@ struct StreamingCaret: View {
     }
 }
 
-/// A turn arriving in the transcript. Fades and rises a few points rather than
-/// popping, which is the difference between an answer that appears and one that
-/// lands. Deliberately small: 6pt and 180ms, because a chat that animates
-/// theatrically on every turn is tiring by the tenth message.
-struct TurnArrival: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = false
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(shown || reduceMotion ? 1 : 0)
-            .offset(y: shown || reduceMotion ? 0 : 6)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeOut(duration: 0.18)) { shown = true }
-            }
-    }
-}
-
-extension View {
-    func turnArrival() -> some View { modifier(TurnArrival()) }
-}
+// A turn used to fade and rise on `onAppear`. It is gone, and should not come
+// back in that form: in a lazy stack `onAppear` fires again every time a row
+// scrolls back into view, so reading up through a transcript re-animated every
+// old message on the way, and the prefetch pass can evaluate a row's body
+// without `onAppear` ever firing at all. A turn arriving already reads as motion
+// — the pending bubble, then the streaming turn, then the settled one — and that
+// sequence is driven by state rather than by a view appearing.
 
 /// The brand gradient, used for exactly two things: the sign-in mark and the
 /// send button. Everywhere else a flat `brand` fill is correct — a gradient on

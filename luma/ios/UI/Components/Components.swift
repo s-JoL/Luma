@@ -132,6 +132,16 @@ struct Spinner: View {
 }
 
 enum Format {
+    /// Rounded on purpose. "大约 1 分钟" is the honest shape of a median over a
+    /// handful of past renders; "63.4 秒" claims a precision the number does not
+    /// have.
+    static func roughly(_ duration: Duration) -> String {
+        let seconds = Int(duration.components.seconds)
+        if seconds < 20 { return "十几秒" }
+        if seconds < 90 { return "\(Int((Double(seconds) / 10).rounded()) * 10) 秒" }
+        return "\(Int((Double(seconds) / 60).rounded())) 分钟"
+    }
+
     static func bytes(_ count: Int) -> String {
         let value = Double(count)
         if value < 1024 { return "\(count) B" }
@@ -166,4 +176,105 @@ struct ZoomedImage: Identifiable {
     let id: String
     var imageId: ImageId { ImageId(id) }
     init(_ raw: String) { id = raw }
+}
+
+/// Something went wrong, said in the two parts that make a failure actionable:
+/// what kind of thing failed, and the one thing that would fix it.
+///
+/// The transcript used to render a run failure as the server's sentence alone in
+/// a red box — "Connection error." with nothing to press. That is accurate and
+/// useless: it does not say whether the network, the server or the model is the
+/// problem, and it leaves the reader to guess that the fix is to send the same
+/// message again. The server's own wording is kept, because it is the only part
+/// that knows what actually happened; it is the title and the buttons that are
+/// added here.
+struct ErrorCard: View {
+    let title: String
+    let message: String
+    var actions: [Action] = []
+
+    struct Action: Identifiable {
+        let id = UUID()
+        let label: String
+        let systemImage: String
+        let run: () -> Void
+
+        init(_ label: String, systemImage: String, run: @escaping () -> Void) {
+            self.label = label
+            self.systemImage = systemImage
+            self.run = run
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Label(title, systemImage: Symbols.failed)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.danger)
+
+            if !message.isEmpty {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(Color.fg)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !actions.isEmpty {
+                HStack(spacing: Space.sm) {
+                    ForEach(actions) { action in
+                        Button(action: action.run) {
+                            Label(action.label, systemImage: action.systemImage)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, Space.md)
+                                .frame(height: 34)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.fg)
+                        .background(Color.secondaryFill, in: Capsule())
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentCard(.danger)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title)。\(message)")
+    }
+}
+
+/// Which failure this is, from the only evidence a client reliably has.
+///
+/// Deliberately coarse. The server writes one sentence for people and the app
+/// does not try to re-derive it; all this decides is the heading and which
+/// buttons make sense, and getting that wrong in the safe direction — offering a
+/// retry that was not needed — costs nothing.
+enum FailureKind {
+    case network
+    case model
+    case server
+
+    init(runError message: String) {
+        let text = message.lowercased()
+        if text.contains("connection") || text.contains("timeout") || text.contains("timed out")
+            || text.contains("network") || text.contains("econnrefused") {
+            self = .network
+        } else if text.contains("模型") || text.contains("model") || text.contains("api key")
+            || text.contains("quota") || text.contains("rate limit") {
+            self = .model
+        } else {
+            self = .server
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .network: "连不上模型服务"
+        case .model: "模型没能回答"
+        case .server: "这次运行失败了"
+        }
+    }
 }

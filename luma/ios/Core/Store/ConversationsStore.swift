@@ -174,6 +174,24 @@ final class ConversationsStore {
         items = updated
     }
 
+    /// The count the transcript actually has, which is the only place that knows
+    /// it between refreshes.
+    ///
+    /// `messageCount` arrives with the row and was then never touched again, so a
+    /// conversation created and used in one sitting read "0 条消息" until
+    /// something happened to re-read the list — which for a new conversation is
+    /// the entire time anyone is looking at it. Nothing here can derive the
+    /// number on its own: a run appends a user message, an assistant message and
+    /// one row per tool call, and only the transcript has counted them.
+    func setMessageCount(_ count: Int, for id: ConversationId) {
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              items[index].messageCount != count
+        else { return }
+        var updated = items
+        updated[index] = ConversationSummary(existing: items[index], messageCount: count)
+        items = updated
+    }
+
     func setRunning(_ isRunning: Bool, for id: ConversationId) {
         if isRunning { running.insert(id) } else { running.remove(id) }
     }
@@ -182,14 +200,19 @@ final class ConversationsStore {
 private extension ConversationSummary {
     /// The wire type has no memberwise initialiser because it decodes
     /// defensively, so an optimistic update rebuilds it here.
-    init(existing: ConversationSummary, title: String? = nil, updatedAt: Int? = nil) {
+    init(
+        existing: ConversationSummary,
+        title: String? = nil,
+        updatedAt: Int? = nil,
+        messageCount: Int? = nil
+    ) {
         self.init(
             id: existing.id,
             title: title ?? existing.title,
             modelId: existing.modelId,
             createdAt: existing.createdAt,
             updatedAt: updatedAt ?? existing.updatedAt,
-            messageCount: existing.messageCount
+            messageCount: messageCount ?? existing.messageCount
         )
     }
 }

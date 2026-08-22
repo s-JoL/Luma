@@ -23,8 +23,15 @@ final class LiveTurn {
     /// reader sees each tool twice.
     private let known: Set<String>
 
+    /// Distinguishes one live turn from the next, which share an id. See
+    /// `Turn.generation`.
+    private static var generations = 0
+    private let generation: Int
+
     init(known: Set<String> = []) {
         self.known = known
+        LiveTurn.generations += 1
+        generation = LiveTurn.generations
     }
 
     /// Re-adds questions asked while this client was closed. The stream replays
@@ -110,7 +117,8 @@ final class LiveTurn {
             seq: -1,
             role: .assistant,
             parts: Parts.withoutRepeatedImages(parts),
-            error: error
+            error: error,
+            generation: generation
         )
     }
 

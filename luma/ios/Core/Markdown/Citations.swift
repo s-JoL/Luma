@@ -1,9 +1,50 @@
 import Foundation
+import UIKit
 
-struct Citation: Sendable, Equatable {
+struct Citation: Sendable, Hashable {
     let label: String
     let url: URL?
     let detail: String?
+}
+
+/// The anchor → source map, plus a token that changes whenever its contents do.
+///
+/// Two things need to compare citation maps constantly and neither can afford to
+/// walk one. A turn's view compares them to decide whether it can skip its body,
+/// and the Markdown cache keys parsed blocks on them because a citation becoming
+/// known changes what a block renders. Both used to settle for `count`, which is
+/// wrong in the case that actually happens: a second read of the same tool output
+/// resolves an anchor to a better label without changing how many there are.
+///
+/// Hashing once, where the map is built, makes both comparisons an integer.
+struct CitationIndex: Sendable, Equatable {
+    private(set) var map: [String: Citation] = [:]
+    private(set) var token: Int = 0
+
+    init() {}
+
+    init(_ map: [String: Citation]) {
+        self.map = map
+        var hasher = Hasher()
+        for key in map.keys.sorted() {
+            hasher.combine(key)
+            hasher.combine(map[key])
+        }
+        token = hasher.finalize()
+    }
+
+    subscript(key: String) -> Citation? { map[key] }
+
+    var isEmpty: Bool { map.isEmpty }
+    var count: Int { map.count }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.token == rhs.token }
+}
+
+extension CitationIndex: ExpressibleByDictionaryLiteral {
+    init(dictionaryLiteral elements: (String, Citation)...) {
+        self.init(Dictionary(elements, uniquingKeysWith: { _, last in last }))
+    }
 }
 
 /// Tool output marks sources with `\ue202turn0file1`-style anchors, and models
@@ -124,6 +165,27 @@ enum Citations {
     }
 
     static let citeScheme = "luma-cite:"
+
+    /// A citation chip is a link by the time the renderer sees it, and so is an
+    /// `image://` reference the model wrote as a link rather than as a picture,
+    /// so both are intercepted rather than needing a custom inline renderer. A
+    /// picture is drawn instead, and carries its own tap.
+    @MainActor
+    static func open(_ url: URL, in citations: CitationIndex, onImage: ((ImageId) -> Void)?) -> Bool {
+        let text = url.absoluteString
+        if text.hasPrefix(citeScheme) {
+            let key = String(text.dropFirst(citeScheme.count)).removingPercentEncoding ?? ""
+            if let destination = citations[key]?.url {
+                UIApplication.shared.open(destination)
+            }
+            return true
+        }
+        if let id = ImageRef.parse(text) {
+            onImage?(id)
+            return true
+        }
+        return false
+    }
 
     /// A label carrying a bracket would close the link early.
     private static func escaped(_ label: String) -> String {

@@ -15,6 +15,7 @@ struct ImageViewer: View {
     @State private var pan: CGSize = .zero
     @State private var committedPan: CGSize = .zero
     @State private var dismissDrag: CGFloat = 0
+    @State private var inspecting = false
 
     private var isZoomed: Bool { committedZoom > 1.01 }
 
@@ -33,8 +34,29 @@ struct ImageViewer: View {
                 .onTapGesture(count: 2) { toggleZoom() }
         }
         .overlay(alignment: .topTrailing) { closeButton }
+        .overlay(alignment: .topLeading) { infoButton }
         .statusBarHidden()
         .animation(reduceMotion ? nil : Motion.move, value: committedZoom)
+        .sheet(isPresented: $inspecting) { AssetDetailView(imageId: imageId) }
+    }
+
+    /// The same sheet the gallery opens. A picture in a transcript has a prompt
+    /// and a model behind it too, and until now the only way to see either was to
+    /// go and find it in the browser.
+    private var infoButton: some View {
+        Button {
+            inspecting = true
+        } label: {
+            Image(systemName: "info")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .floatingGlass(in: .circle, interactive: true)
+        }
+        .buttonStyle(.plain)
+        .padding(Space.lg)
+        .opacity(1 - min(1, Double(abs(dismissDrag)) / 160))
+        .accessibilityLabel("这张图是怎么来的")
     }
 
     /// Fades the backdrop as the image is pulled away, so the dismiss reads as

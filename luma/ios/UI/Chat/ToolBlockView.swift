@@ -15,17 +15,16 @@ struct ToolBlockView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let resultCap = 4000
+    /// Head-anchored, unlike a command's output: a tool result is a document and
+    /// its first lines are the ones that say what it is.
+    private static let panelHeight: CGFloat = 240
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if expanded { detail }
         }
-        .background(Color.card, in: RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.lg)
-                .strokeBorder(borderColour, lineWidth: 1)
-        )
+        .contentCard(tool.isError ? .danger : .raised)
         .contextMenu {
             Button {
                 UIPasteboard.general.string = tool.result
@@ -83,26 +82,29 @@ struct ToolBlockView: View {
                 .fill(tone.opacity(0.14))
                 .frame(width: 28, height: 28)
             if tool.running {
+                // One repeating animation handed to the compositor, rather than
+                // a loop that wakes up to add another 360° every 0.9s. Core
+                // Animation then spins it without the app being involved, and
+                // without a state mutation per revolution in a row that is
+                // already being rebuilt by the stream.
                 Circle()
                     .trim(from: 0, to: 0.7)
                     .stroke(tone, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                     .frame(width: 28, height: 28)
-                    .rotationEffect(.degrees(spin))
+                    .rotationEffect(.degrees(spinning ? 360 : 0))
+                    .animation(
+                        reduceMotion ? nil : .linear(duration: 0.9).repeatForever(autoreverses: false),
+                        value: spinning
+                    )
+                    .onAppear { spinning = true }
             }
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(tone)
         }
-        .task(id: tool.running) {
-            guard tool.running, !reduceMotion else { return }
-            while !Task.isCancelled {
-                withAnimation(.linear(duration: 0.9)) { spin += 360 }
-                try? await Task.sleep(for: .milliseconds(900))
-            }
-        }
     }
 
-    @State private var spin: Double = 0
+    @State private var spinning = false
 
     private var symbol: String {
         if tool.isError { return Symbols.failed }
@@ -113,10 +115,6 @@ struct ToolBlockView: View {
         if tool.isError { return .danger }
         if tool.running { return .brand }
         return .ok
-    }
-
-    private var borderColour: Color {
-        tool.isError ? Color.danger.opacity(0.35) : Color.hairline
     }
 
     private var statusLabel: String {
@@ -139,7 +137,7 @@ struct ToolBlockView: View {
             }
             if !tool.result.isEmpty {
                 panel(label: tool.isError ? "错误" : "结果", text: cappedResult)
-                if tool.result.count > Self.resultCap && !showingAll {
+                if !showingAll {
                     Button("展开全部（共 \(tool.result.count) 字）") { showingAll = true }
                         .font(.caption)
                         .foregroundStyle(Color.brand)
@@ -150,6 +148,12 @@ struct ToolBlockView: View {
         .transition(.opacity)
     }
 
+    /// Horizontal scroll rather than wrapping, and a height cap rather than
+    /// whatever the tool happened to return. An unbounded result turns one turn
+    /// into several screens of monospaced text that the reader has to scroll past
+    /// to reach the answer it was gathered for — and while a run is live, a
+    /// result that arrives at full height shoves everything below it down the
+    /// screen at once.
     private func panel(label: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Text(label)
@@ -163,6 +167,8 @@ struct ToolBlockView: View {
                     .padding(Space.md)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxHeight: showingAll ? nil : Self.panelHeight, alignment: .top)
+            .clipped()
             .background(Color.mutedFill, in: RoundedRectangle(cornerRadius: Radius.md))
         }
     }

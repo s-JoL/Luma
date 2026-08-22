@@ -39,15 +39,23 @@ struct SignedInView: View {
             guard !didLoad else { return }
             didLoad = true
             await app.load()
+            await app.takeParkedQuestion()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, didLoad else { return }
-            Task { await app.conversations.refresh() }
+            Task {
+                await app.conversations.refresh()
+                await app.approvals.refresh()
+                // A question can arrive from Siri while the app is already
+                // running, in which case there is no cold start to pick it up.
+                await app.takeParkedQuestion()
+            }
         }
     }
 }
 
 private struct CompactRoot: View {
+    @Environment(AppModel.self) private var app
     @State private var destination = Destination.chat
 
     var body: some View {
@@ -55,6 +63,7 @@ private struct CompactRoot: View {
             NavigationStack { ConversationListView() }
                 .tabItem { Label(Destination.chat.title, systemImage: Destination.chat.symbol) }
                 .tag(Destination.chat)
+                .badge(app.approvals.count)
 
             NavigationStack { StudioView() }
                 .tabItem { Label(Destination.studio.title, systemImage: Destination.studio.symbol) }
@@ -71,6 +80,14 @@ private struct CompactRoot: View {
             NavigationStack { SettingsView() }
                 .tabItem { Label(Destination.settings.title, systemImage: Destination.settings.symbol) }
                 .tag(Destination.settings)
+        }
+        // A question asked through Siri lands in a conversation the app has just
+        // created and already sent to, and that conversation is on the chat tab
+        // whichever tab was last open. `ConversationListView` does the pushing;
+        // this only makes sure it is on screen to do it.
+        .onChange(of: app.opening) { _, id in
+            guard id != nil else { return }
+            destination = .chat
         }
     }
 }

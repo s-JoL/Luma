@@ -45,7 +45,7 @@ struct Bootstrap: Decodable, Sendable {
     }
 }
 
-enum ModelKind: String, Decodable, Sendable {
+enum ModelKind: String, Codable, Sendable {
     case chat, image, video, embedding, rerank
 
     /// A row written before generation existed carries no `kind`, and an
@@ -56,11 +56,19 @@ enum ModelKind: String, Decodable, Sendable {
     }
 }
 
-enum GenerationOp: String, Decodable, Sendable {
+enum GenerationOp: String, Codable, Sendable {
     case textToImage = "text_to_image"
     case imageToImage = "image_to_image"
     case textToVideo = "text_to_video"
     case imageToVideo = "image_to_video"
+
+    /// An operation this build has never heard of is dropped rather than thrown.
+    /// `ops` rides along on every model row, so a server that grows a fifth
+    /// operation would otherwise fail the whole bootstrap on an older app and
+    /// leave it with no models at all.
+    static func known(_ raw: [String]) -> [GenerationOp] {
+        raw.compactMap(GenerationOp.init(rawValue:))
+    }
 }
 
 struct ModelSpec: Decodable, Sendable, Identifiable, Hashable {
@@ -78,13 +86,29 @@ struct ModelSpec: Decodable, Sendable, Identifiable, Hashable {
     /// Derived server-side: the provider has a usable key.
     let configured: Bool?
 
+    /// The rest of the row, which only 设置 reads. A conversation runs on the
+    /// fields above; these exist so the editor can put a model back the way it
+    /// found it instead of flattening whatever it did not render.
+    let ops: [GenerationOp]
+    let agentTool: Bool
+    let input: [String]
+    let thinkingLevel: String
+    let librechatCompat: Bool
+    let systemPrompt: String?
+    let temperature: Double?
+
     /// Absent on a server that predates the field, and reading that as unusable
     /// would empty the switcher against an older deployment.
     var isUsable: Bool { configured ?? true }
 
+    var acceptsImages: Bool { input.contains("image") }
+
+    func supports(_ op: GenerationOp) -> Bool { ops.isEmpty || ops.contains(op) }
+
     private enum CodingKeys: String, CodingKey {
         case id, name, providerId, model, enabled, kind, pinned, reasoning
         case contextWindow, maxTokens, apiMode, configured
+        case ops, agentTool, input, thinkingLevel, librechatCompat, systemPrompt, temperature
     }
 
     init(from decoder: any Decoder) throws {
@@ -101,6 +125,13 @@ struct ModelSpec: Decodable, Sendable, Identifiable, Hashable {
         maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 0
         apiMode = try c.decodeIfPresent(String.self, forKey: .apiMode) ?? "openai-chat"
         configured = try c.decodeIfPresent(Bool.self, forKey: .configured)
+        ops = GenerationOp.known(try c.decodeIfPresent([String].self, forKey: .ops) ?? [])
+        agentTool = try c.decodeIfPresent(Bool.self, forKey: .agentTool) ?? false
+        input = try c.decodeIfPresent([String].self, forKey: .input) ?? ["text"]
+        thinkingLevel = try c.decodeIfPresent(String.self, forKey: .thinkingLevel) ?? "off"
+        librechatCompat = try c.decodeIfPresent(Bool.self, forKey: .librechatCompat) ?? false
+        systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt)
+        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature)
     }
 }
 
@@ -120,12 +151,28 @@ struct Provider: Decodable, Sendable, Identifiable, Hashable {
         let header: String?
         let prefix: String?
 
-        enum Style: String, Decodable, Sendable {
+        enum Style: String, Codable, Sendable, CaseIterable {
             case bearer, header, none
 
             init(from decoder: any Decoder) throws {
                 let raw = try decoder.singleValueContainer().decode(String.self)
                 self = Style(rawValue: raw) ?? .bearer
+            }
+
+            var label: String {
+                switch self {
+                case .bearer: "Bearer 令牌"
+                case .header: "自定义请求头"
+                case .none: "不带凭证"
+                }
+            }
+
+            var hint: String {
+                switch self {
+                case .bearer: "大多数兼容接口"
+                case .header: "x-api-key、api-key 这类"
+                case .none: "本机 Ollama、ComfyUI、llama.cpp"
+                }
             }
         }
     }
@@ -140,6 +187,7 @@ struct Capabilities: Decodable, Sendable {
     let files: Files
     let web: Web
     let coding: Coding
+    let embedding: Embedding
     let studio: Studio
 
     struct Memory: Decodable, Sendable {
@@ -170,6 +218,20 @@ struct Capabilities: Decodable, Sendable {
         let write: Bool
         let shell: Bool
         let workspace: String
+    }
+
+    /// What turns an uploaded document into something 检索 can find. Its own
+    /// endpoint rather than a model row: the chunk sizes belong to the index,
+    /// not to any one provider, and changing them only affects files indexed
+    /// afterwards — which is why 能力 offers a rebuild beside them.
+    struct Embedding: Decodable, Sendable {
+        let enabled: Bool
+        let baseUrl: String
+        let model: String
+        let dimensions: Int?
+        let chunkSize: Int
+        let chunkOverlap: Int
+        let hasKey: Bool
     }
 
     struct Studio: Decodable, Sendable {

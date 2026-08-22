@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// The way in. A list of threads, with anything the agent is blocked on pinned
+/// above them.
 struct ConversationListView: View {
     @Environment(AppModel.self) private var app
     /// Bound on iPad, where the list is a column rather than a stack root.
@@ -16,27 +18,16 @@ struct ConversationListView: View {
     var body: some View {
         List(selection: selection) {
             if query.isEmpty {
-                ForEach(groups, id: \.label) { group in
-                    Section(group.label) {
-                        ForEach(group.rows) { row in
-                            link(for: row)
-                        }
-                    }
-                }
-                if store.hasMore {
-                    HStack {
-                        Spacer()
-                        Spinner()
-                        Spacer()
-                    }
-                    .listRowSeparator(.hidden)
-                    .task { await store.loadMore() }
-                }
+                waiting
+                threads
             } else {
-                searchSection
+                searchResults
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.bg)
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle("对话")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索对话")
@@ -51,7 +42,10 @@ struct ConversationListView: View {
             guard !Task.isCancelled else { return }
             await store.search(query)
         }
-        .refreshable { await store.loadFirstPage() }
+        .refreshable {
+            await store.loadFirstPage()
+            await app.approvals.refresh()
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -64,43 +58,12 @@ struct ConversationListView: View {
                 } label: {
                     Label("新对话", systemImage: Symbols.newConversation)
                         .opacity(store.isCreating ? 0 : 1)
-                        .overlay {
-                            if store.isCreating { Spinner() }
-                        }
+                        .overlay { if store.isCreating { Spinner() } }
                 }
                 .disabled(store.isCreating)
             }
         }
-        .overlay {
-            if store.items.isEmpty && !store.isLoading && query.isEmpty {
-                // An empty list and a list that could not be read look identical,
-                // and offering 新对话 against a server that just refused is the
-                // wrong next step to suggest.
-                if let error = store.error {
-                    ContentUnavailableView {
-                        Label("没能读到对话", systemImage: Symbols.failed)
-                    } description: {
-                        Text(error)
-                    } actions: {
-                        Button("重试") { Task { await store.loadFirstPage() } }
-                            .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    ContentUnavailableView {
-                        Label("还没有对话", systemImage: Symbols.chat)
-                    } description: {
-                        Text("问点什么，或者让它画一张图")
-                    } actions: {
-                        Button(store.isCreating ? "正在新建…" : "新对话") {
-                            Haptics.tap()
-                            Task { await newConversation() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.isCreating)
-                    }
-                }
-            }
-        }
+        .overlay { emptyState }
         // With rows already on screen there is nowhere to put this, so it goes to
         // the toast the rest of the app reports background failures through.
         .onChange(of: store.error) { _, message in
@@ -109,6 +72,13 @@ struct ConversationListView: View {
         }
         .navigationDestination(item: $pushed) { id in
             TranscriptView(id: id)
+        }
+        // A question asked through Siri arrives as a conversation that already
+        // exists and has already been sent to; all that is left is to go there.
+        .onChange(of: app.opening) { _, id in
+            guard let id else { return }
+            open(id)
+            app.opening = nil
         }
         .alert("重命名", isPresented: .constant(renaming != nil)) {
             TextField("标题", text: $draftTitle)
@@ -132,18 +102,82 @@ struct ConversationListView: View {
         }
     }
 
+    // MARK: Sections
+
+    /// Questions the agent is blocked on, wherever they were asked.
+    ///
+    /// At the top of the list rather than behind a tab or a badge, because the
+    /// whole problem it solves is that the owner does not know to go looking: a
+    /// run stopped halfway through in a conversation that is not on screen looks
+    /// exactly like a run that finished.
+    @ViewBuilder
+    private var waiting: some View {
+        if !app.approvals.pending.isEmpty {
+            Section {
+                ForEach(app.approvals.pending) { approval in
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Button {
+                            open(approval.conversationId)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(app.approvals.title(for: approval.conversationId))
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .semibold))
+                            }
+                            .foregroundStyle(Color.brand)
+                        }
+                        .buttonStyle(.plain)
+
+                        ApprovalCardView(approval: approval) { approved in
+                            Task { await app.approvals.decide(approval, approved: approved) }
+                        }
+                    }
+                    .padding(.vertical, Space.xs)
+                    .listRowSeparator(.hidden)
+                }
+            } header: {
+                Label("等你确认（\(app.approvals.count)）", systemImage: "exclamationmark.shield")
+                    .foregroundStyle(Color.warn)
+                    .textCase(nil)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var threads: some View {
+        ForEach(groups, id: \.label) { group in
+            Section(group.label) {
+                ForEach(group.rows) { row in
+                    link(for: row)
+                }
+            }
+        }
+        if store.hasMore {
+            HStack { Spacer(); Spinner(); Spacer() }
+                .listRowSeparator(.hidden)
+                .task { await store.loadMore() }
+        }
+    }
+
     @ViewBuilder
     private func link(for row: ConversationSummary) -> some View {
         Group {
             if selection == nil {
-                Button { pushed = row.id } label: { ConversationRow(row: row, isRunning: isRunning(row)) }
-                    .buttonStyle(.plain)
+                Button { pushed = row.id } label: {
+                    ConversationRow(row: row, modelName: modelName(row), isRunning: isRunning(row))
+                }
+                .buttonStyle(.plain)
             } else {
-                ConversationRow(row: row, isRunning: isRunning(row)).tag(row.id)
+                ConversationRow(row: row, modelName: modelName(row), isRunning: isRunning(row))
+                    .tag(row.id)
             }
         }
         .swipeActions(edge: .trailing) {
-            Button(role: .destructive) { deleting = row } label: { Label("删除", systemImage: "trash") }
+            Button(role: .destructive) { deleting = row } label: {
+                Label("删除", systemImage: "trash")
+            }
         }
         .swipeActions(edge: .leading) {
             Button {
@@ -166,40 +200,104 @@ struct ConversationListView: View {
             } label: {
                 Label("复制标题", systemImage: "doc.on.doc")
             }
-            Button(role: .destructive) { deleting = row } label: { Label("删除", systemImage: "trash") }
+            Button(role: .destructive) { deleting = row } label: {
+                Label("删除", systemImage: "trash")
+            }
         }
     }
 
     @ViewBuilder
-    private var searchSection: some View {
+    private var searchResults: some View {
         if store.isSearching && store.searchResults.isEmpty {
             HStack { Spacer(); Spinner(); Spacer() }
+                .listRowSeparator(.hidden)
         } else if store.searchResults.isEmpty {
             ContentUnavailableView.search(text: query)
+                .listRowSeparator(.hidden)
         } else {
             ForEach(store.searchResults) { hit in
                 Button {
                     open(hit.conversationId)
                 } label: {
-                    VStack(alignment: .leading, spacing: Space.xs) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(hit.title.isEmpty ? "新对话" : hit.title)
-                            .font(.body.weight(.medium))
+                            .font(.body)
                             .lineLimit(1)
                         Text(hit.snippet)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
-                    .padding(.vertical, Space.xs)
+                    .padding(.vertical, 4)
                 }
                 .buttonStyle(.plain)
             }
         }
     }
 
+    @ViewBuilder
+    private var emptyState: some View {
+        if store.items.isEmpty, !store.isLoading, query.isEmpty, app.approvals.pending.isEmpty {
+            // An empty list and a list that could not be read look identical,
+            // and offering 新对话 against a server that just refused is the
+            // wrong next step to suggest.
+            if let error = store.error {
+                ContentUnavailableView {
+                    Label("没能读到对话", systemImage: Symbols.failed)
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("重试") { Task { await store.loadFirstPage() } }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("还没有对话", systemImage: Symbols.chat)
+                } description: {
+                    Text("问点什么，或者让它画一张图")
+                } actions: {
+                    Button(store.isCreating ? "正在新建…" : "开始对话") {
+                        Haptics.tap()
+                        Task { await newConversation() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isCreating)
+                }
+            }
+        }
+    }
+
+    // MARK: Reading a row
+
     private func isRunning(_ row: ConversationSummary) -> Bool {
         store.running.contains(row.id)
     }
+
+    /// Which model answered here, and only when it is not the usual one. A badge
+    /// on every row is a badge on no row.
+    private func modelName(_ row: ConversationSummary) -> String? {
+        guard let bootstrap = app.bootstrap, row.modelId != bootstrap.defaultModelId else {
+            return nil
+        }
+        return bootstrap.model(row.modelId)?.name
+    }
+
+    /// Grouped by day, exactly as the web's `groupByDay`.
+    private var groups: [(label: String, rows: [ConversationSummary])] {
+        var order: [String] = []
+        var buckets: [String: [ConversationSummary]] = [:]
+        for row in store.items {
+            let label = DayLabel.of(row.updatedAt)
+            if buckets[label] == nil {
+                buckets[label] = []
+                order.append(label)
+            }
+            buckets[label]?.append(row)
+        }
+        return order.map { ($0, buckets[$0] ?? []) }
+    }
+
+    // MARK: Actions
 
     private func open(_ id: ConversationId) {
         if let selection {
@@ -211,9 +309,7 @@ struct ConversationListView: View {
 
     private func newConversation() async {
         do {
-            let created = try await store.create(
-                modelId: app.bootstrap?.defaultModelId
-            )
+            let created = try await store.create(modelId: app.bootstrap?.defaultModelId)
             open(created.id)
         } catch let error as APIError {
             app.handle(error)
@@ -234,26 +330,15 @@ struct ConversationListView: View {
             )
         } catch {}
     }
-
-    /// Grouped by day, exactly as the web's `groupByDay`.
-    private var groups: [(label: String, rows: [ConversationSummary])] {
-        var order: [String] = []
-        var buckets: [String: [ConversationSummary]] = [:]
-        for row in store.items {
-            let label = DayLabel.of(row.updatedAt)
-            if buckets[label] == nil {
-                buckets[label] = []
-                order.append(label)
-            }
-            buckets[label]?.append(row)
-        }
-        return order.map { ($0, buckets[$0] ?? []) }
-    }
 }
+
+// MARK: - Row
 
 private struct ConversationRow: View {
     let row: ConversationSummary
+    let modelName: String?
     let isRunning: Bool
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
 
@@ -261,14 +346,26 @@ private struct ConversationRow: View {
         HStack(alignment: .center, spacing: Space.md) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(row.displayTitle)
-                    .font(.body.weight(.medium))
+                    .font(.body)
                     .foregroundStyle(Color.fg)
                     .lineLimit(1)
-                // `ConversationSummary` carries no preview text, so the row shows
-                // the count rather than a subtitle the API cannot supply.
-                Text("\(row.messageCount) 条消息")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: Space.xs) {
+                    // The count is only shown once there is one. A brand new
+                    // conversation reading "0 条消息" was the list telling the
+                    // truth about a number it had not been told yet.
+                    if row.messageCount > 0 {
+                        Text("\(row.messageCount) 条消息")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("还没有消息")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let modelName {
+                        Badge(text: modelName, tone: .brand)
+                    }
+                }
             }
             Spacer(minLength: Space.sm)
             if isRunning {
@@ -297,8 +394,7 @@ private struct ConversationRow: View {
                     .monospacedDigit()
             }
         }
-        .padding(.vertical, Space.sm)
-        .frame(minHeight: 58)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }

@@ -40,6 +40,14 @@ final class VideoTests: XCTestCase {
         app.tabBars.buttons["文件"].tap()
         XCTAssertTrue(app.navigationBars["文件"].waitForExistence(timeout: 10))
 
+        // The kind filters live in a toolbar menu rather than in a row of chips
+        // above the list, so getting to 视频 is two taps. Found by identifier
+        // because the label is a filled-or-outlined glyph depending on whether
+        // anything is filtered, and a test should not care which.
+        let filter = app.buttons["files.filter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 10))
+        filter.tap()
+
         let videosFilter = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "视频")
         ).firstMatch

@@ -93,11 +93,7 @@ struct ApprovalCardView: View {
         }
         .padding(Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.card, in: RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.lg)
-                .strokeBorder(approval.status == .pending ? Color.warn : Color.hairline, lineWidth: 1.5)
-        )
+        .contentCard(approval.status == .pending ? .warning : .raised)
         .opacity(approval.status == .expired ? 0.6 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("需要确认：\(approval.summary)")

@@ -65,6 +65,14 @@ final class LibraryStore {
         hits = result.results
     }
 
+    /// Back to browsing. Emptying the search field is not a search for nothing,
+    /// and leaving the last hits on screen under an empty field is how a list
+    /// ends up showing results for a query that is no longer there.
+    func clearSearch() {
+        hits = nil
+        isSearching = false
+    }
+
     func createNote(name: String, text: String) async throws {
         _ = try await api.send(.createNote(name: name, text: text), as: FileRecord.self)
         await load()

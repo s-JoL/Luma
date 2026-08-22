@@ -27,6 +27,7 @@ final class AppModel {
     private(set) var library: LibraryStore
     private(set) var memory: MemoryStore
     private(set) var studio: StudioStore
+    private(set) var approvals: ApprovalsStore
 
     /// Warm transcripts, most-recently-used first. Three is enough to make
     /// tapping back and forth between two conversations instant without holding
@@ -49,12 +50,14 @@ final class AppModel {
         library = LibraryStore(api: client)
         memory = MemoryStore(api: client)
         studio = StudioStore(api: client)
+        approvals = ApprovalsStore(api: client)
         session = base == nil ? .needsServer : (token == nil ? .signedOut : .signedIn)
 
         // `handle` is the only place that decides what a failure means, and a
         // store cannot be handed `self` until every stored property exists.
         library.attach(self)
         studio.attach(self)
+        approvals.attach(self)
     }
 
     // MARK: Server address
@@ -83,6 +86,7 @@ final class AppModel {
             library.reset()
             memory.reset()
             studio.reset()
+            approvals.reset()
         }
 
         ServerLocator.baseURL = base
@@ -126,31 +130,65 @@ final class AppModel {
         library.reset()
         memory.reset()
         studio.reset()
+        approvals.reset()
         Task { try? await client.send(.logout()) }
         await api.setToken(nil)
     }
 
     // MARK: Cold start
 
-    /// A cold start is two calls in parallel. The conversation list is
+    /// A cold start is three calls in parallel. The conversation list is
     /// deliberately not in bootstrap: it is paged and changes far more often
-    /// than settings do.
+    /// than settings do. The waiting approvals are separate for the opposite
+    /// reason — they are usually empty, and when they are not the owner needs to
+    /// see them before anything else on the screen matters.
     func load() async {
         let started = Date()
         await ImageLoader.shared.use(api)
         async let settings = api.send(.bootstrap(), as: Bootstrap.self)
         async let list: Void = conversations.loadFirstPage()
+        async let waiting: Void = approvals.refresh()
 
         do {
             bootstrap = try await settings
             lastBootstrapMillis = Int(Date().timeIntervalSince(started) * 1000)
             await list
+            await waiting
         } catch let error as APIError {
             _ = await list
+            _ = await waiting
             handle(error)
         } catch {
             _ = await list
+            _ = await waiting
         }
+    }
+
+    // MARK: Asked from outside
+
+    /// A conversation the app should open and has already sent a message to.
+    /// Set when a question arrives from Siri or Shortcuts; the root view watches
+    /// it and navigates.
+    var opening: ConversationId?
+
+    /// Picks up a question parked by `AskLumaIntent` and turns it into a real
+    /// conversation. Nothing happens when there is none, which is every launch
+    /// but the ones that came from an intent.
+    ///
+    /// Sending here rather than in the intent is deliberate: `send` is what knows
+    /// about idempotency keys, the pending bubble and the follow loop, and an
+    /// intent that posted its own run would have to reimplement all three and
+    /// still hand the conversation over.
+    func takeParkedQuestion() async {
+        guard session == .signedIn, let text = Handoff.take() else { return }
+        do {
+            let created = try await conversations.create(modelId: bootstrap?.defaultModelId)
+            let store = transcript(for: created.id)
+            opening = created.id
+            await store.send(text: text)
+        } catch let error as APIError {
+            handle(error)
+        } catch {}
     }
 
     // MARK: Transcripts

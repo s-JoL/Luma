@@ -16,7 +16,21 @@ final class TranscriptStore {
     private(set) var turns: [Turn] = []
     /// The streaming turn, republished at 20 Hz rather than on every delta.
     private(set) var live: Turn?
-    private(set) var citations: [String: Citation] = [:]
+    /// Whether there *is* a streaming turn, as a property of its own.
+    ///
+    /// Observation invalidates a view when a property it read changes, so any
+    /// view that asked `live != nil` was rebuilt twenty times a second for the
+    /// length of a run — including the one holding the `ForEach` over every
+    /// settled turn, which then deep-compared each of them against an identical
+    /// copy. The whole transcript was being re-diffed to answer a question whose
+    /// answer changes twice per run. This is that question, stored separately so
+    /// asking it is free.
+    private(set) var hasLive = false
+    /// Bumped once per published frame. The tail-follower watches this instead of
+    /// `live` so that following the stream costs an integer comparison rather
+    /// than a deep comparison of the whole turn.
+    private(set) var liveTick = 0
+    private(set) var citations = CitationIndex()
 
     private(set) var title: String = ""
     private(set) var modelId: ModelId?
@@ -57,6 +71,23 @@ final class TranscriptStore {
         /// The message watermark when this was sent. The persisted copy is the
         /// first user message to appear above it.
         var afterSeq: Int = -1
+    }
+
+    /// The tail-follow target of last resort, when there is no turn to aim at.
+    static let bottomAnchor = "transcript.bottom"
+
+    /// What to scroll to when following the tail. **Not the sentinel.** The
+    /// bottom anchor is a 1pt view at the end of a `LazyVStack`, and a lazy stack
+    /// does not create views far outside the visible range — so with the keyboard
+    /// up and 140pt of answer hidden behind it, scrolling to it was asking for an
+    /// id that did not exist yet and silently did nothing. The last *turn* is a
+    /// large, realised view, and anchoring to its bottom lands in the same place.
+    ///
+    /// Read from event handlers rather than from a body, which is what keeps it
+    /// off the dependency graph despite touching two observed properties.
+    var tailId: String {
+        if hasLive { return Turn.liveId }
+        return turns.last?.id ?? Self.bottomAnchor
     }
 
     private let api: APIClient
@@ -175,7 +206,8 @@ final class TranscriptStore {
             turns = older.filter { !known.contains($0.id) } + turns
             earliestSeq = page.items.map(\.seq).min()
             hasMoreHistory = page.nextCursor != nil
-            citations = Citations.collect(from: turns)
+            citations = CitationIndex(Citations.collect(from: turns))
+            MarkdownCache.warm(older, citations: citations)
         } catch {
             // Leave `hasMoreHistory` set so scrolling up tries again.
         }
@@ -196,8 +228,17 @@ final class TranscriptStore {
             merge(rebuilt)
         }
         messageSeq = max(messageSeq, page.items.map(\.seq).max() ?? messageSeq)
-        citations = Citations.collect(from: turns)
+        citations = CitationIndex(Citations.collect(from: turns))
+        // Parse the prose the reader has not scrolled to yet, off the main
+        // thread, before they do. A block parsed on first sight is parsed during
+        // the scroll that revealed it.
+        MarkdownCache.warm(turns, citations: citations)
         dropPendingOncePersisted()
+        // Sequence numbers are dense from zero within a conversation, so the
+        // highest one seen is the count. Told to the list here because this is
+        // the only place that learns it — the row it came with was a snapshot
+        // from whenever the list was last read.
+        app?.conversations.setMessageCount(messageSeq + 1, for: id)
     }
 
     /// The optimistic bubble goes when the real one takes its place, and not
@@ -402,7 +443,7 @@ final class TranscriptStore {
         // that basis, so publishing an empty one left the reader with no sign at
         // all for the whole of the model's first-token latency — which on a
         // reasoning model is the several seconds most in need of one.
-        live = turn.isEmpty ? nil : turn.snapshot()
+        setLive(turn.isEmpty ? nil : turn.snapshot())
     }
 
     func follow(run: RunId, after: Int) {
@@ -651,9 +692,20 @@ final class TranscriptStore {
         runId = nil
         connection = .idle
         liveTurn = nil
-        live = nil
+        setLive(nil)
         app?.conversations.setRunning(false, for: id)
         Haptics.settled()
+
+        // A haptic is only felt by someone holding the phone with the app open.
+        // A run that finished while it was in a pocket is the case worth telling
+        // them about, and `Notifier` decides which of the two this is.
+        let failed = error != nil
+        let title = self.title
+        Task { await Notifier.runFinished(title: title, failed: failed) }
+
+        // A run that stopped to ask something leaves the question in the inbox,
+        // and this is the moment the inbox is out of date.
+        Task { [weak app] in await app?.approvals.refresh() }
     }
 
     // MARK: Publishing at 20 Hz
@@ -686,7 +738,16 @@ final class TranscriptStore {
 
     private func publishNow() {
         guard let liveTurn else { return }
-        live = liveTurn.isEmpty ? nil : liveTurn.snapshot()
+        setLive(liveTurn.isEmpty ? nil : liveTurn.snapshot())
+    }
+
+    /// The one place `live` is assigned, so the two signals derived from it
+    /// cannot drift. `hasLive` is only written when it actually flips, because
+    /// writing the same value to an observed property still invalidates.
+    private func setLive(_ turn: Turn?) {
+        live = turn
+        if hasLive != (turn != nil) { hasLive = (turn != nil) }
+        liveTick &+= 1
     }
 }
 
