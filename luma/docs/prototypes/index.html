@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Luma 产品原型</title>
+    <!--
+      静态原型，不接后端。设计依据在 ../07-product-design.md。
+      双击这个文件就能开，不需要服务器、不需要构建、没有外部依赖。
+    -->
+    <link rel="stylesheet" href="prototype.css" />
+  </head>
+  <body>
+    <header class="chrome">
+      <div class="brand"><span class="mark">✦</span>Luma 产品原型</div>
+      <div class="segment" id="theme">
+        <button data-theme="light">浅色</button>
+        <button data-theme="dark" aria-pressed="true">深色</button>
+      </div>
+      <span class="hint">静态页，不接后端。屏与屏之间可以点：姿势卡、磁贴、底栏、侧栏按钮都会跳。</span>
+      <div class="spacer"></div>
+      <span class="hint">依据：docs/07-product-design.md</span>
+    </header>
+
+    <div class="shell">
+      <nav class="index" id="index"></nav>
+      <main class="stage">
+        <div class="stagehead" id="stagehead"></div>
+        <div class="scaler" id="scaler"></div>
+        <div class="notes" id="notes"></div>
+      </main>
+    </div>
+
+    <script src="prototype.js"></script>
+  </body>
+</html>
