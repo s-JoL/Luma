@@ -13,7 +13,7 @@ import type {
   StudioTool,
   ThinkingLevel,
 } from "@shared/types.ts";
-import { API_MODES, isChatKind, isGenerationKind, needsApiKey } from "@shared/types.ts";
+import { API_MODES, OP_LABELS, isChatKind, isGenerationKind, needsApiKey } from "@shared/types.ts";
 import { api } from "../../api.ts";
 import {
   Badge,
@@ -302,6 +302,13 @@ export function ModelsSection({ reload }: { reload: () => Promise<void> }) {
 
   return (
     <>
+      <Catalogue
+        providers={providers}
+        kinds={["chat"]}
+        preferProviderId={defaults.defaultModelId ? models.find((model) => model.id === defaults.defaultModelId)?.providerId : undefined}
+        onAdded={refresh}
+      />
+
       <Section
         title="对话模型"
         hint="星标出现在对话右上角。默认模型是新对话的起点。"
@@ -437,6 +444,13 @@ export function GenerationSection({ reload }: { reload: () => Promise<void> }) {
 
   return (
     <>
+      <Catalogue
+        providers={providers}
+        kinds={["image", "video"]}
+        preferProviderId={generation.find((model) => providers.some((provider) => provider.id === model.providerId && provider.hasKey))?.providerId}
+        onAdded={refresh}
+      />
+
       {images.length || videos.length ? (
         <Section title="默认后端" hint="对话里的生图、改图、做视频走这里。创作台打开时也先选中它们。">
           <SectionBody>
@@ -601,7 +615,19 @@ const blankModel = (providerId: string, sortOrder: number, kind: ModelKind): Mod
  * is a search-and-tick list rather than a dropdown: filter, select the handful
  * you want, add them in one write, then adjust the details afterwards.
  */
-function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () => Promise<void> }) {
+function Catalogue({
+  providers,
+  onAdded,
+  kinds,
+  preferProviderId,
+}: {
+  providers: Provider[];
+  onAdded: () => Promise<void>;
+  /** When set, only those kinds are offered — the tools page does not want chat rows. */
+  kinds?: ModelKind[];
+  /** Open on the provider you already use for this page, not whoever is first in the list. */
+  preferProviderId?: string;
+}) {
   const act = useAction();
   const toast = useToast();
   const [providerId, setProviderId] = useState("");
@@ -611,9 +637,13 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(false);
 
-  const active = providerId || providers[0]?.id || "";
+  const active = providerId || (preferProviderId && providers.some((provider) => provider.id === preferProviderId) ? preferProviderId : "") || providers[0]?.id || "";
   const pulledFor = useRef("");
-  const visible = (items ?? []).filter(
+  const scoped = (items ?? [])
+    .filter((item) => (!kinds || kinds.includes(item.suggestion.kind)) && !item.coveredBy)
+    .slice()
+    .sort((a, b) => Number(a.added) - Number(b.added) || a.suggestion.name.localeCompare(b.suggestion.name));
+  const visible = scoped.filter(
     (item) =>
       item.model.toLowerCase().includes(needle.trim().toLowerCase()) &&
       (kind === "all" || item.suggestion.kind === kind),
@@ -654,12 +684,16 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
     });
 
   // Only the kinds actually on offer, so the filter never shows an empty option.
-  const kinds = [...new Set((items ?? []).map((item) => item.suggestion.kind))];
+  const offered = [...new Set(scoped.map((item) => item.suggestion.kind))];
 
   return (
     <Section
       title="从提供方添加"
-      hint="有密钥就会自动拉列表。勾上要的，点添加。类型和上下文会先猜一遍，保存前可以改。"
+      hint={
+        kinds?.includes("image")
+          ? "有密钥就会自动拉列表。勾上要的再添加：协议、生图/改图、参数会先填好，空着的默认后端也会接上。"
+          : "有密钥就会自动拉列表。勾上要的，点添加。类型和上下文会先猜一遍，空着的默认模型会接上。"
+      }
       actions={
         <div className="flex items-center gap-2">
           {loading ? <Spinner className="text-muted-foreground" /> : null}
@@ -684,7 +718,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
             <div className="flex gap-2">
               <Input
                 className="flex-1"
-                placeholder={`在 ${items.length} 个模型里筛选，例如 grok / seedream`}
+                placeholder={`在 ${scoped.length} 个模型里筛选，例如 grok / seedream`}
                 value={needle}
                 onChange={(event) => setNeedle(event.target.value)}
               />
@@ -692,7 +726,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                 variant="primary"
                 disabled={picked.size === 0}
                 onClick={async () => {
-                  const chosen = items.filter((item) => picked.has(item.model));
+                  const chosen = scoped.filter((item) => picked.has(item.model) && !item.added);
                   const ok = await act(
                     () =>
                       api.createModels(
@@ -708,6 +742,7 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                           contextWindow: item.suggestion.contextWindow,
                           maxTokens: item.suggestion.maxTokens,
                           thinkingLevel: item.suggestion.reasoning ? "high" : "off",
+                          params: item.suggestion.params,
                         })),
                       ),
                     `已添加 ${picked.size} 个模型`,
@@ -724,9 +759,9 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                 添加所选（{picked.size}）
               </Button>
             </div>
-            {kinds.length > 1 ? (
+            {offered.length > 1 ? (
               <div className="flex flex-wrap items-center gap-1.5">
-                {(["all", ...kinds] as Array<"all" | ModelKind>).map((option) => (
+                {(["all", ...offered] as Array<"all" | ModelKind>).map((option) => (
                   <button
                     key={option}
                     className={cn(
@@ -757,10 +792,13 @@ function Catalogue({ providers, onAdded }: { providers: Provider[]; onAdded: () 
                 onChange={() => toggle(item.model)}
               />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm">{item.model}</div>
+                <div className="truncate text-sm">{item.suggestion.name}</div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {item.suggestion.kind} · {apiModeLabel(item.suggestion.apiMode)}
-                  {item.suggestion.ops.length ? ` · ${item.suggestion.ops.join(" / ")}` : ""}
+                  {item.model}
+                  {item.suggestion.ops.length
+                    ? ` · ${item.suggestion.ops.map((op) => OP_LABELS[op]).join(" / ")}`
+                    : ` · ${item.suggestion.kind}`}
+                  {` · ${apiModeLabel(item.suggestion.apiMode)}`}
                   {item.suggestion.reasoning ? " · 推理" : ""}
                   {item.suggestion.input.includes("image") ? " · 图片输入" : ""}
                 </div>
@@ -934,6 +972,7 @@ function ModelEditor({
     if (applied.current === key) return;
     applied.current = key;
     const suggestion = hit.suggestion;
+    if (suggestion.params) setParamsText(JSON.stringify(suggestion.params, null, 2));
     setDraft((current) => ({
       ...current,
       id: current.id || suggestion.id,
@@ -946,6 +985,7 @@ function ModelEditor({
       contextWindow: suggestion.contextWindow,
       maxTokens: suggestion.maxTokens,
       thinkingLevel: suggestion.reasoning ? (current.thinkingLevel === "off" ? "high" : current.thinkingLevel) : "off",
+      params: suggestion.params ?? current.params,
     }));
   }, [draft.model, draft.providerId, isNew, model.model, remote]);
 

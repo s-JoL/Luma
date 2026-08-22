@@ -8,14 +8,15 @@ import type {
   PromptSettings,
   ProviderInput,
 } from "@shared/types.ts";
-import { API_MODES } from "@shared/types.ts";
-import { SECRET } from "../../config.ts";
+import { API_MODES, isChatKind } from "@shared/types.ts";
+import { SECRET, type Config } from "../../config.ts";
 import { adapterOps } from "../../generation/index.ts";
 import { slug } from "../../ids.ts";
 import { discoverModels } from "../../models/catalogue.ts";
 import { providerAuth } from "../../models/auth.ts";
 import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../../prompts/defaults.ts";
 import type { Services } from "../../services.ts";
+import type { Store } from "../../store/store.ts";
 import { readJson } from "../body.ts";
 import { fail, failFromError } from "../errors.ts";
 
@@ -148,6 +149,7 @@ export function settingsRoutes(services: Services) {
       );
       added.push(id);
     }
+    fillEmptyDefaults(store, config, added);
     services.reload();
     return context.json({ added, skipped }, 201);
   });
@@ -348,6 +350,37 @@ function normalizeModel(input: ModelInput): ModelInput {
     compat: input.compat ?? null,
     sortOrder: input.sortOrder,
   };
+}
+
+/**
+ * A pull that adds the first usable backend should also bind the empty slots.
+ * Otherwise discovery stops at a row in the list, and 生图/改图 still say
+ * 「按可用后端选」 until someone walks over to the dropdown.
+ */
+function fillEmptyDefaults(store: Store, config: Config, added: string[]) {
+  if (!added.length) return;
+  if (!config.defaultModelId()) {
+    const chat = added.map((id) => store.getModel(id)).find((spec) => spec && isChatKind(spec.kind) && spec.enabled);
+    if (chat) config.setDefaultModelId(chat.id);
+  }
+  const current = config.generationDefaults();
+  const next = { ...current };
+  for (const id of added) {
+    const spec = store.getModel(id);
+    if (!spec?.enabled) continue;
+    if (spec.kind === "image") {
+      if (!next.imageModelId && spec.ops.includes("text_to_image")) next.imageModelId = spec.id;
+      if (!next.editModelId && spec.ops.includes("image_to_image")) next.editModelId = spec.id;
+    }
+    if (spec.kind === "video" && !next.videoModelId) next.videoModelId = spec.id;
+  }
+  if (
+    next.imageModelId !== current.imageModelId ||
+    next.editModelId !== current.editModelId ||
+    next.videoModelId !== current.videoModelId
+  ) {
+    config.setGenerationDefaults(next);
+  }
 }
 
 /** The mode decides the kind when a client does not name one. */

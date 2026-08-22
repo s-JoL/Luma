@@ -28,7 +28,7 @@ const { Jobs } = await import("../src/server/generation/jobs.ts");
 const { opsOf, schemaOf, studioPriority, supportsOp } = await import("../src/server/generation/index.ts");
 const { generationTools } = await import("../src/server/tools/generation.ts");
 const { jobProviderId } = await import("../src/server/store/store.ts");
-const { classifyModel } = await import("../src/server/models/catalogue.ts");
+const { classifyModel, discoverModels } = await import("../src/server/models/catalogue.ts");
 const { saveImageBytes } = await import("../src/server/images.ts");
 
 ensureDirectories();
@@ -168,6 +168,9 @@ const veniceState = {
   retrieveBody: {} as Record<string, unknown>,
   retrieves: 0,
   completed: 0,
+  generateBody: {} as Record<string, unknown>,
+  editBody: {} as Record<string, unknown>,
+  editPath: "",
 };
 
 const hostedServer = http.createServer(async (request, response) => {
@@ -203,6 +206,15 @@ const hostedServer = http.createServer(async (request, response) => {
     hostedState.videoLastBody = await body(request);
     return send(200, { id: "vid-remote-1", status: "queued" });
   }
+  if (request.method === "POST" && url.pathname === "/image/generate") {
+    veniceState.generateBody = JSON.parse(await body(request));
+    return send(200, { id: "venice-image-1", images: [PNG.toString("base64")] });
+  }
+  if (request.method === "POST" && (url.pathname === "/image/edit" || url.pathname === "/image/multi-edit")) {
+    veniceState.editPath = url.pathname;
+    veniceState.editBody = JSON.parse(await body(request));
+    return send(200, PNG, "image/png");
+  }
   if (request.method === "POST" && url.pathname === "/video/queue") {
     veniceState.queueBody = JSON.parse(await body(request));
     return send(200, { queue_id: "venice-remote-1" });
@@ -230,6 +242,35 @@ const hostedServer = http.createServer(async (request, response) => {
     return send(200, { id: "vid-remote-1", status: hostedState.videoStatus[index], progress: 50 });
   }
   if (url.pathname === "/models") {
+    const type = url.searchParams.get("type");
+    if (type === "image") {
+      return send(200, {
+        type: "image",
+        data: [
+          {
+            id: "seedream-v5-pro",
+            type: "image",
+            name: "Seedream 5 Pro",
+            model_spec: { constraints: { aspectRatios: ["1:1", "16:9"], promptCharacterLimit: 1800 } },
+          },
+        ],
+      });
+    }
+    if (type === "inpaint") {
+      return send(200, {
+        type: "inpaint",
+        data: [
+          {
+            id: "seedream-v5-pro-edit",
+            type: "inpaint",
+            model_spec: { constraints: { maxInputImages: 10, combineImages: true } },
+          },
+        ],
+      });
+    }
+    if (type === "video") {
+      return send(200, { type: "video", data: [{ id: "seedance-2.5-pro" }] });
+    }
     return send(200, {
       data: [
         { id: "grok-4.6" },
@@ -311,6 +352,18 @@ store.upsertModel({
   id: "venice-video", name: "Seedance 2.5 R2V", model: "seedance-2-5-reference-to-video-basic", providerId: "venice",
   kind: "video", ops: ["image_to_video"], apiMode: "venice-videos",
   params: { durations: [5, 10], resolutions: ["720p"], aspectRatios: ["16:9", "9:16"], imageAspectRatios: ["16:9", "9:16"], sourceField: "reference_image_urls", pollIntervalMs: 10 },
+});
+store.upsertModel({
+  ...chatModel,
+  id: "venice-image", name: "Seedream 5 Pro", model: "seedream-v5-pro", providerId: "venice",
+  kind: "image", ops: ["text_to_image", "image_to_image"], apiMode: "venice-images",
+  params: { aspectRatios: ["1:1", "16:9"], editModel: "seedream-v5-pro-edit" },
+});
+store.upsertModel({
+  ...chatModel,
+  id: "venice-image-edit", name: "Seedream 5 Pro Edit", model: "seedream-v5-pro-edit", providerId: "venice",
+  kind: "image", ops: ["image_to_image"], apiMode: "venice-images",
+  params: { aspectRatios: ["auto", "1:1"], maxSources: 3 },
 });
 
 const jobs = new Jobs(store, vault);
@@ -429,6 +482,32 @@ await check("Venice queues JSON, polls with its model pair and saves the returne
   assert(veniceState.completed === 1, `cleanup count ${veniceState.completed}`);
   assert(job.assets[0]?.kind === "video", "Venice result was not a video asset");
   return `${veniceState.retrieves} retrieves, one cleanup`;
+});
+
+await check("Venice images speak generate and edit, not OpenAI's paths", async () => {
+  const drawn = await jobs.run({
+    modelId: "venice-image",
+    params: { prompt: "a canal at dusk", aspect_ratio: "16:9" },
+  });
+  assert(drawn.status === "succeeded", `Venice generate ${drawn.status}: ${drawn.error}`);
+  assert(veniceState.generateBody.model === "seedream-v5-pro", `generate model ${veniceState.generateBody.model}`);
+  assert(veniceState.generateBody.safe_mode === false, "safe_mode was left on");
+  assert(veniceState.generateBody.format === "png", `format ${veniceState.generateBody.format}`);
+  assert(veniceState.generateBody.aspect_ratio === "16:9", `aspect ${veniceState.generateBody.aspect_ratio}`);
+  assert(drawn.assets[0]?.kind === "image", "Venice generate was not an image asset");
+
+  const edited = await jobs.run({
+    modelId: "venice-image",
+    op: "image_to_image",
+    params: { prompt: "warmer light", source_image_id: seedImage },
+  });
+  assert(edited.status === "succeeded", `Venice edit ${edited.status}: ${edited.error}`);
+  assert(veniceState.editPath === "/image/edit", `edit path ${veniceState.editPath}`);
+  assert(veniceState.editBody.model === "seedream-v5-pro-edit", `edit model ${veniceState.editBody.model}`);
+  assert(veniceState.editBody.safe_mode === false, "edit safe_mode was left on");
+  assert(String(veniceState.editBody.image).startsWith("iVBOR"), "edit image was not raw base64");
+  assert(store.getImageAsset(edited.assets[0]!.assetId)?.parentImageIds?.includes(seedImage), "edit lost the parent");
+  return "generate and edit both landed";
 });
 
 await check("a render the backend owns survives a restart, one it does not is failed", async () => {
@@ -772,9 +851,33 @@ await check("discovery suggests a kind, and everything else follows from it", ()
   const unknown = classifyModel("something-shipped-last-tuesday", "hosted");
   assert(unknown.kind === "chat" && !unknown.ops.length, `an unrecognised id became ${unknown.kind}`);
 
-  // Every hosted image API Luma speaks is OpenAI-shaped, whatever the gateway.
+  const seedream = classifyModel("seedream-5-0-pro-260628", "hosted");
+  assert(seedream.kind === "image", `seedream was suggested as ${seedream.kind}`);
+  assert(seedream.ops.join() === "text_to_image,image_to_image", `seedream suggested ${seedream.ops.join(", ")}`);
+  assert(seedream.apiMode === "openai-images", `seedream protocol ${seedream.apiMode}`);
+  assert(seedream.params?.editMode === "unified", "seedream lost its unified edit params");
+  assert(Array.isArray(seedream.params?.sizes), "seedream sizes were not attached");
+
   const hostedImage = classifyModel("lustify-sdxl", "gateway", "https://example.test/api/v1");
   assert(hostedImage.apiMode === "openai-images", `a hosted image id got ${hostedImage.apiMode}`);
+
+  const veniceImage = classifyModel("seedream-v5-pro", "venice", "https://api.venice.ai/api/v1");
+  assert(veniceImage.apiMode === "venice-images", `venice seedream got ${veniceImage.apiMode}`);
+  assert(veniceImage.ops.join() === "text_to_image", `venice generate suggested ${veniceImage.ops.join(", ")}`);
+  const veniceEdit = classifyModel("seedream-v5-pro-edit", "venice", "https://api.venice.ai/api/v1");
+  assert(veniceEdit.ops.join() === "image_to_image", `venice edit suggested ${veniceEdit.ops.join(", ")}`);
+  const veniceListed = classifyModel("seedream-v5-pro", "venice", "https://api.venice.ai/api/v1", {
+    types: ["image"],
+    constraints: { aspectRatios: ["1:1", "16:9"], promptCharacterLimit: 2000 },
+  });
+  assert(veniceListed.ops.join() === "text_to_image", "a typed generate row also grew an edit op");
+  assert((veniceListed.params?.aspectRatios as string[] | undefined)?.includes("16:9"), "listing ratios were dropped");
+  assert(veniceListed.params?.promptLimit === 2000, `prompt limit ${veniceListed.params?.promptLimit}`);
+  const inpaint = classifyModel("qwen-edit", "venice", "https://api.venice.ai/api/v1", {
+    types: ["inpaint"],
+    constraints: { maxInputImages: 6 },
+  });
+  assert(inpaint.ops.join() === "image_to_image" && inpaint.params?.maxSources === 6, "inpaint listing lost its sources");
 
   // Gemini is suggested on its own protocol: `safetySettings` exists nowhere
   // else, and without it the gateway answers ordinary requests with
@@ -794,6 +897,26 @@ await check("discovery suggests a kind, and everything else follows from it", ()
   const claudeViaGateway = classifyModel("claude-opus-4-6", "p", "https://api.example.com/v1");
   assert(claudeViaGateway.apiMode === "openai-chat", `aggregator claude got ${claudeViaGateway.apiMode}`);
   return "kind, ops, protocol and input all follow from the id";
+});
+
+await check("discovery merges typed lists and listing constraints onto each id", async () => {
+  const venice = store.getProvider("venice");
+  if (!venice) throw new Error("venice provider missing");
+  const found = await discoverModels(venice, "test-key", new Set());
+  const generate = found.find((item) => item.model === "seedream-v5-pro");
+  assert(generate?.suggestion.kind === "image", `pulled generate as ${generate?.suggestion.kind}`);
+  assert(generate?.suggestion.name === "Seedream 5 Pro", `pulled name ${generate?.suggestion.name}`);
+  assert(generate?.suggestion.ops.join() === "text_to_image,image_to_image", `pulled generate ops ${generate?.suggestion.ops.join(", ")}`);
+  assert(generate?.suggestion.params?.editModel === "seedream-v5-pro-edit", `edit sibling ${generate?.suggestion.params?.editModel}`);
+  assert((generate?.suggestion.params?.aspectRatios as string[] | undefined)?.includes("16:9"), "pulled ratios missing");
+  const edit = found.find((item) => item.model === "seedream-v5-pro-edit");
+  assert(edit?.suggestion.ops.join() === "image_to_image", `pulled edit ops ${edit?.suggestion.ops.join(", ")}`);
+  assert(edit?.coveredBy === "seedream-v5-pro", `edit twin covered by ${edit?.coveredBy}`);
+  assert(edit?.suggestion.params?.maxSources === 10, `pulled maxSources ${edit?.suggestion.params?.maxSources}`);
+  assert(generate?.suggestion.params?.maxSources === 10, `linked maxSources ${generate?.suggestion.params?.maxSources}`);
+  const video = found.find((item) => item.model === "seedance-2.5-pro");
+  assert(video?.suggestion.kind === "video", `typed video became ${video?.suggestion.kind}`);
+  return `${found.length} ids, typed image/inpaint/video merged`;
 });
 
 await check("a row's declared ops are trusted, but not beyond its kind", () => {

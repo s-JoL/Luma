@@ -10,14 +10,9 @@ import { DEFAULT_GLOBAL_PROMPT, DEFAULT_TOOL_PROMPT } from "../prompts/defaults.
 import { json } from "./db.ts";
 import type { Store } from "./store.ts";
 
-const SEED_VERSION = "16";
+const SEED_VERSION = "17";
 
-/**
- * Providers dropped from the defaults; removed on upgrade unless customised.
- * `venice` went with its adapter: its image API was the one hosted backend that
- * was not OpenAI-shaped, and carrying a second protocol for one provider cost
- * more than pointing an OpenAI-shaped row at whichever gateway serves the model.
- */
+/** Providers dropped from the defaults; removed on upgrade unless customised. */
 const RETIRED_PROVIDERS = ["kie"];
 
 const PROVIDERS: Array<ProviderInput & { id: string }> = [
@@ -214,6 +209,7 @@ export function seed(store: Store, config: Config, vault: SecretVault) {
     if (!known.has(spec.apiMode)) store.deleteModel(spec.id);
   }
   retargetGemini(store);
+  retargetVeniceImages(store);
   for (const id of RETIRED_MCP) store.deleteMcpServer(id);
   const adopted: string[] = [];
   for (const [index, provider] of PROVIDERS.entries()) {
@@ -302,6 +298,32 @@ function retargetGemini(store: Store) {
     moved.push(spec.id);
   }
   if (moved.length) console.log(`[seed] moved to Gemini's own protocol: ${moved.join(", ")}`);
+}
+
+/**
+ * Venice image rows that were bulk-added as OpenAI-shaped never ran: the host
+ * does not speak `/images/generations` for these models. Same situation as
+ * Gemini — nobody chose that protocol, it was the default guess.
+ */
+function retargetVeniceImages(store: Store) {
+  const moved: string[] = [];
+  for (const spec of store.listModels()) {
+    if (spec.kind !== "image" || spec.apiMode !== "openai-images") continue;
+    const provider = store.getProvider(spec.providerId);
+    if (!provider || !/venice\.ai/i.test(provider.baseUrl)) continue;
+    const edit = /(?:^|[-_])(?:edit|inpaint)(?:[-_]|$)/i.test(spec.model);
+    const wantedEdit = !edit && spec.ops.includes("image_to_image");
+    store.upsertModel({
+      ...spec,
+      apiMode: "venice-images",
+      ops: edit ? ["image_to_image"] : wantedEdit ? ["text_to_image", "image_to_image"] : ["text_to_image"],
+      params: wantedEdit
+        ? { ...(spec.params ?? {}), editModel: (spec.params as { editModel?: string } | undefined)?.editModel ?? `${spec.model}-edit` }
+        : spec.params,
+    });
+    moved.push(spec.id);
+  }
+  if (moved.length) console.log(`[seed] moved Venice images onto the native protocol: ${moved.join(", ")}`);
 }
 
 function polishShippedRow(existing: ModelSpec, model: ModelInput) {

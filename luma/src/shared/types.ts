@@ -17,7 +17,8 @@ export type ApiMode =
   | "openai-images"
   | "comfy-workflow"
   | "openai-videos"
-  | "venice-videos";
+  | "venice-videos"
+  | "venice-images";
 
 /**
  * What a model is for. `chat` models go through pi-ai; the generation kinds go
@@ -37,6 +38,7 @@ export const API_MODES: Array<{ id: ApiMode; label: string; path: string; kinds:
   { id: "comfy-workflow", label: "ComfyUI", path: "/prompt", kinds: ["image", "video"] },
   { id: "openai-videos", label: "视频", path: "/videos", kinds: ["video"] },
   { id: "venice-videos", label: "视频（Venice Queue）", path: "/video/queue", kinds: ["video"] },
+  { id: "venice-images", label: "图像（Venice）", path: "/image/generate", kinds: ["image"] },
 ];
 
 /**
@@ -185,6 +187,11 @@ export interface DiscoveredModel {
   model: string;
   /** True when a configured model already points at this remote id. */
   added: boolean;
+  /**
+   * Remote id of a generate model that already carries this one as `editModel`.
+   * The list hides these so Seedream is one tick, not generate plus a `-edit` twin.
+   */
+  coveredBy?: string;
   suggestion: {
     id: string;
     name: string;
@@ -196,6 +203,8 @@ export interface DiscoveredModel {
     /** From the listing when the provider sends one; otherwise a family guess. */
     contextWindow: number;
     maxTokens: number;
+    /** Family / listing defaults for a generation row (sizes, edit mode, …). */
+    params?: Record<string, unknown>;
   };
 }
 

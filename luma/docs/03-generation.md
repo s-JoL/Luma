@@ -18,18 +18,20 @@ image_to_video  提示词 + 1 图     → 视频
 
 ## Adapter
 
-`models.api_mode` 选中 adapter。现在三个：
+`models.api_mode` 选中 adapter：
 
 | `api_mode` | 做什么 |
 |---|---|
 | `openai-images` | OpenAI 形 `/images/generations` 与 `/images/edits`（含 Ark/Seedream 的 unified JSON） |
+| `venice-images` | Venice 原生 `/image/generate`、`/image/edit`、`/image/multi-edit`。目录里若有 `foo` + `foo-edit`，生图行带上 `params.editModel`，改图孪生不再单独勾 |
 | `comfy-workflow` | 本机 ComfyUI。model = `data/workflows` 里一份图 + 行上的 bind/sizes/controls |
 | `openai-videos` | OpenAI 形异步提交 → 轮询 → 下载。路径和完成态写在行的 `params` 里 |
 | `venice-videos` | Venice `/video/queue` → `/video/retrieve`；完成时直接返回 MP4 或预签名下载地址 |
 
-托管图像只留 OpenAI 这一形。曾经有过一个 Venice adapter，为一家供应商多养一套
-协议不值得——同一个模型换个网关就是 OpenAI 形的行。种子里退役的 `api_mode`
-连同它的行一起被删掉，免得列表里留着跑不起来的模型。
+目录发现按 host 认协议，和聊天认 Anthropic / Gemini 一样：`venice.ai` 上的图像
+行是 `venice-images`，别的网关上同一个 Seedream id 仍是 `openai-images`。Venice
+的 `safe_mode` 默认会模糊结果，请求里关掉——过滤不在 Luma 里叠一层
+（`00-product.md`）。
 
 ComfyUI 不是特例：它是一个听 `127.0.0.1` 的图像/视频 API。workflow 是文件，
 加一个不是发版。源图的字节在进 adapter 之前由 registry 一次解析完。

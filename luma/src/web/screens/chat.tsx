@@ -540,7 +540,9 @@ export function Chat({
         </Button>
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium md:text-base">{title || "新对话"}</h1>
 
-        <div className="hidden items-center gap-2 sm:flex">{modelSelect("h-8 max-w-44 text-sm")}</div>
+        <div className="hidden min-w-0 shrink-0 items-center gap-2 sm:flex">
+          {modelSelect("h-8 max-w-56 text-sm")}
+        </div>
         <Button
           variant="ghost"
           size="icon"

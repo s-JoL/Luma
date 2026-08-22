@@ -15,9 +15,19 @@
 | `image` / `video` | 生成。见 `03-generation.md` |
 | `embedding` / `rerank` | 检索用，不是对话模型 |
 
-`GET /providers/:id/models` 去对方的 `/models`（以及分类的图/视频目录）拉清单，
-再 `POST /models/bulk` 加进来。聊天走 `ModelRegistry`（pi-ai + 重试）；生成不走
-pi-ai，走 generation adapters。
+`GET /providers/:id/models` 去对方的 `/models` 拉清单，并兼探 `?type=image` /
+`?type=video` / `?type=inpaint`。带类型的列表只有在它真的和全量清单不一样时才
+信——否则一个忽略查询参数的 OpenAI 形网关会把全部对话模型标成图。行上的
+`type`、`model_spec.constraints`（画幅、分辨率、`maxInputImages`、提示词上限）
+覆盖 id 上的猜测。
+
+生成行还会带上族的默认 `params`：OpenAI 形 Seedream 是 unified 改图（同一条
+`/images/generations` 带参考图）；Venice 上若清单同时有 `foo` 和 `foo-edit`，
+生图行会带上 `params.editModel`，列表里不再单独勾那个改图孪生。批量添加会把
+这些 `params` 写进去，并填上当时还空着的默认生图 / 改图 / 视频（以及对话默认
+模型）。设置里「模型」「工具与后端」「提供方」都能拉清单，前两页按种类过滤。
+
+聊天走 `ModelRegistry`（pi-ai + 重试）；生成不走 pi-ai，走 generation adapters。
 
 上下文长度写在 `models.context_window`，给压缩和预算用。CometAPI 这类聚合器的
 `/models` 往往只给 id，不给窗口；这时用模型族的已知数字（Gemini 1M、Grok 4.6

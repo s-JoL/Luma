@@ -110,17 +110,15 @@ export function Select<T extends string>({
     >
       <SelectPrimitive.Trigger
         className={cn(
-          "inline-flex h-9 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 " +
-            "text-left transition-colors outline-none hover:bg-accent/50 focus-visible:border-ring " +
+          "inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 " +
+            "text-left whitespace-nowrap transition-colors outline-none hover:bg-accent/50 focus-visible:border-ring " +
             "focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:opacity-60 data-[placeholder]:text-muted-foreground",
           className,
         )}
       >
-        {triggerLabel ? (
-          <span className="truncate">{triggerLabel}</span>
-        ) : (
-          <SelectPrimitive.Value placeholder={placeholder} />
-        )}
+        <span className="min-w-0 flex-1 truncate">
+          {triggerLabel ?? <SelectPrimitive.Value placeholder={placeholder} />}
+        </span>
         <SelectPrimitive.Icon>
           <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
         </SelectPrimitive.Icon>
