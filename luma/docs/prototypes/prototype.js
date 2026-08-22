@@ -649,8 +649,8 @@
         '<div class="grow">' + jobCard("Seedance · 图生视频 · 出自「雨夜巷口」", "约 2 分钟", 62, { go: "story" }) + "</div>" +
         '<div class="grow">' + jobCard("Lustify v10 · 生图 ×2", "排队中", 12, { icon: "images" }) + "</div>" +
         "</div>" +
-        '<div class="grid" style="grid-template-columns:repeat(4,1fr)">' +
-        vid("雨檐下 · 推近", 292, "5s", "aspect-ratio:16/9;grid-column:span 2", "asset") +
+        '<div class="masonry">' +
+        vid("雨檐下 · 推近", 292, "5s", "aspect-ratio:16/9", "asset") +
         tiles.slice(0, 6).map(function (t) {
           return ph(t[0], t[1], "aspect-ratio:" + t[2], "asset");
         }).join("") +
@@ -1360,9 +1360,21 @@
     var height = isPhone ? 844 : 800;
     var avail = scaler.clientWidth;
     var scale = Math.min(1, avail / w);
-    var offset = Math.max(0, (avail - w * scale) / 2);
-    frame.style.transform = "translateX(" + offset + "px) scale(" + scale + ")";
-    scaler.style.height = height * scale + "px";
+
+    frame.style.transform = "";
+    frame.style.zoom = String(scale);
+    scaler.classList.remove("fallback");
+    scaler.style.height = "";
+
+    // zoom 缩了布局盒的话，测出来的宽度就是缩过的，说明卡会自己排在下面。没缩
+    // 说明这个引擎不认 zoom，改走 transform，并且亲手把高度让出来。
+    if (Math.abs(frame.getBoundingClientRect().width - w * scale) > 2) {
+      frame.style.zoom = "";
+      scaler.classList.add("fallback");
+      var offset = Math.max(0, (avail - w * scale) / 2);
+      frame.style.transform = "translateX(" + offset + "px) scale(" + scale + ")";
+      scaler.style.height = height * scale + "px";
+    }
   }
 
   function render() {

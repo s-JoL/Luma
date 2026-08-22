@@ -233,13 +233,20 @@ button {
   font-size: 12.5px;
 }
 
+/**
+ * 框按可用宽度缩放。首选 `zoom`：它同时缩布局盒，所以说明卡会自己落在框下面，
+ * 不用 JS 记一份高度——记错一次就是框压住说明。不支持 zoom 的引擎回退到
+ * transform，那条路才需要显式高度。
+ */
 .scaler {
   position: relative;
+  display: flex;
   width: 100%;
   max-width: 1280px;
+  justify-content: center;
 }
 
-.scaler > .frame {
+.scaler.fallback > .frame {
   position: absolute;
   top: 0;
   left: 0;
@@ -792,6 +799,18 @@ button {
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
 }
 
+/* The gallery is masonry in the real client, and a grid of mixed aspect ratios
+   leaves holes. Columns give the same shape without a layout library. */
+.masonry {
+  columns: 4;
+  column-gap: 10px;
+}
+
+.masonry > * {
+  margin-bottom: 10px;
+  break-inside: avoid;
+}
+
 /* --------------------------------------------------------------- utilities */
 
 .row {
@@ -920,13 +939,15 @@ button {
 
 /* ----------------------------------------------------------------- drawers */
 
+/* Exactly as wide as the aside it covers, so opening it never clips the
+   transcript underneath. */
 .frame .drawer {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
   display: flex;
-  width: 340px;
+  width: 300px;
   flex-direction: column;
   border-left: 1px solid var(--border);
   background: var(--card);
@@ -969,6 +990,15 @@ button {
   flex: 1;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* iOS does not park a scrollbar next to the content. */
+.frame.phone .scroll {
+  scrollbar-width: none;
+}
+
+.frame.phone .scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .tabbar {
