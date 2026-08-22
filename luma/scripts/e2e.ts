@@ -77,7 +77,7 @@ interface RunTrace {
   text: string;
   /** Text a reconnecting client would recover from persisted `message.end`. */
   finalText: string;
-  tools: Array<{ name: string; intent?: string; isError?: boolean }>;
+  tools: Array<{ name: string; intent?: string; isError?: boolean; result?: string }>;
   /** Every destructive call the server stopped to ask about, and how it ended. */
   approvals: Array<{ id: string; action: string; summary: string; status: string }>;
   title: string;
@@ -148,7 +148,10 @@ async function stream(runId: string, after: number, policy: ApprovalPolicy = "ap
       }
       if (type === "tool.execution.end") {
         const entry = trace.tools.findLast((tool) => tool.name === data.toolName);
-        if (entry) entry.isError = Boolean(data.isError);
+        if (entry) {
+          entry.isError = Boolean(data.isError);
+          entry.result = typeof data.result === "string" ? data.result : JSON.stringify(data.result ?? "");
+        }
       }
       if (type === "tool.approval.required" || type === "tool.approval.resolved") {
         const approval = data.approval as { id: string; action: string; summary: string; status: string };
@@ -518,6 +521,7 @@ console.log(
 
 await check("bootstrap exposes what a cold client needs", async () => {
   const reply = await call<{
+    apiModes: Array<{ id: string; label: string; path: string; kinds: string[] }>;
     models: Array<{ id: string; configured: boolean; kind: string; ops: string[] }>;
     capabilities: {
       memory: { enabled: boolean };
@@ -529,6 +533,7 @@ await check("bootstrap exposes what a cold client needs", async () => {
     defaultImageModelId: string;
   }>("GET", "/bootstrap");
   assert(reply.status === 200, `status ${reply.status}`);
+  assert(reply.body.apiModes.some((mode) => mode.id === "openai-chat" && mode.kinds.includes("chat")), "api mode catalogue missing");
   const configured = reply.body.models.filter((model) => model.configured);
   assert(configured.length > 0, "no configured model");
   assert(reply.body.defaultModelId, "no default model");
@@ -548,6 +553,25 @@ await check("bootstrap exposes what a cold client needs", async () => {
   assert(reply.body.capabilities.embedding.hasKey === hasEmbedding, "embedding key flag not reported consistently");
   const drawable = configured.filter((model) => model.kind !== "chat").length;
   return `${configured.length} configured, ${drawable} of them generative, ${reply.body.mcp.length} mcp`;
+});
+
+await check("unknown model api modes are rejected without creating a row", async () => {
+  const catalogue = await call<{ items: Array<{ id: string; providerId: string }> }>("GET", "/models");
+  const providerId = catalogue.body.items[0]?.providerId;
+  assert(providerId, "no provider-backed model to test with");
+  const id = "e2e-invalid-api-mode";
+  const rejected = await call("POST", "/models", {
+    id,
+    providerId,
+    name: "must not persist",
+    model: "must-not-persist",
+    kind: "image",
+    apiMode: "not-a-real-mode",
+  });
+  assert(rejected.status === 400, `invalid api mode returned ${rejected.status}`);
+  const after = await call<{ items: Array<{ id: string }> }>("GET", "/models");
+  assert(!after.body.items.some((model) => model.id === id), "invalid model was persisted");
+  return "400 and no row";
 });
 
 await check("secrets never leave the server", async () => {
@@ -821,9 +845,15 @@ await check("second turn sees the generated image", async () => {
 });
 
 await check("uploaded image can be edited", async () => {
-  // Editing does not need the agent's drawing backend, only pixels to edit, so
-  // this must not skip merely because the preset points at a ComfyUI nobody
-  // started. The gallery is tried before paying for a render.
+  // Editing does not need the agent's drawing backend, but it does need one
+  // configured editor. An unconfigured hosted row is deliberately not offered
+  // as a tool: silently routing to it only turns a missing key into a failed
+  // conversation.
+  const tools = await call<{ items: Array<{ kind: string; configured: boolean }> }>("GET", "/studio/tools");
+  if (!tools.body.items.some((tool) => tool.kind === "edit" && tool.configured)) {
+    throw new Skip("no configured image editor");
+  }
+  // The gallery is tried before paying for a render.
   const source = await editSource();
   if (!source) throw new Skip("no image to edit and no reachable backend to make one");
   const { imageId, bytes } = source;
@@ -837,7 +867,7 @@ await check("uploaded image can be edited", async () => {
     used,
     `edit tool not called (tools: ${run.tools.map((t) => t.name).join(",") || "none"}); the model said: ${run.finalText.slice(0, 300)}`,
   );
-  assert(!used.isError, "edit tool reported an error");
+  assert(!used.isError, `edit tool reported an error: ${used.result?.slice(0, 500) ?? "no result"}`);
 
   const messages = await call<{ items: unknown[] }>("GET", `/conversations/${run.conversationId}/messages`);
   const produced = [...JSON.stringify(messages.body).matchAll(/"image_id":"(img_[0-9a-f]{32})"/g)].map(

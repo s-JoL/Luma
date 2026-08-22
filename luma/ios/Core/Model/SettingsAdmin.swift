@@ -359,43 +359,6 @@ struct CapabilitiesPatch: Encodable, Sendable {
 
 // MARK: - Fixed vocabularies
 
-/// The wire protocols a model can be called with, mirrored from
-/// `shared/types.ts`. Nothing on `/v1` publishes this list — it decides which
-/// adapter runs, so it ships with the server rather than being configured — and
-/// a client that guessed instead would offer modes the server cannot honour.
-/// A new adapter therefore needs a line here, which is the one place `06-clients.md`
-/// says an App release is unavoidable.
-enum ApiModes {
-    struct Option: Identifiable, Sendable {
-        let id: String
-        let label: String
-        let path: String
-        let kinds: [ModelKind]
-    }
-
-    static let all: [Option] = [
-        Option(id: "openai-chat", label: "对话（Chat Completions）", path: "/chat/completions", kinds: [.chat]),
-        Option(id: "openai-responses", label: "对话（Responses）", path: "/responses", kinds: [.chat]),
-        Option(id: "anthropic-messages", label: "对话（Anthropic）", path: "/messages", kinds: [.chat]),
-        Option(id: "google-generative", label: "对话（Gemini 原生）", path: "/v1beta/models", kinds: [.chat]),
-        Option(id: "openai-images", label: "图像", path: "/images/generations", kinds: [.image]),
-        Option(id: "comfy-workflow", label: "ComfyUI", path: "/prompt", kinds: [.image, .video]),
-        Option(id: "openai-videos", label: "视频", path: "/videos", kinds: [.video]),
-        Option(id: "venice-videos", label: "视频（Venice Queue）", path: "/video/queue", kinds: [.video]),
-        Option(id: "venice-images", label: "图像（Venice）", path: "/image/generate", kinds: [.image]),
-    ]
-
-    static let chat: [Option] = all.filter { $0.kinds.contains(.chat) }
-
-    static func label(_ id: String) -> String {
-        all.first { $0.id == id }?.label ?? id
-    }
-
-    static func path(_ id: String) -> String {
-        all.first { $0.id == id }?.path ?? ""
-    }
-}
-
 enum ThinkingLevels {
     static let all = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 }

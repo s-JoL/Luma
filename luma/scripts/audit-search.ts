@@ -63,7 +63,7 @@ await check("searxng answers without a key", async () => {
   return "two organic results, no API key";
 });
 
-await check("an unknown provider falls back to tavily and then demands its key", async () => {
+await check("an unknown provider fails visibly instead of changing providers", async () => {
   const tool = webSearchTool({ getApiKey: () => undefined, provider: "not-a-backend" });
   await tool
     .execute!("c2", { intent: "look up", query: "x" }, undefined as never)
@@ -72,9 +72,9 @@ await check("an unknown provider falls back to tavily and then demands its key",
     })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      assert(/tavily/i.test(message), `fell through to: ${message}`);
+      assert(/unknown web search provider: not-a-backend/i.test(message), `unexpected error: ${message}`);
     });
-  return "unknown id → tavily → missing key";
+  return "unknown id rejected";
 });
 
 searx.close();

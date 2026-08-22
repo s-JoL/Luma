@@ -100,7 +100,7 @@ struct GenerationSettingsView: View {
     }
 
     private func subtitle(_ model: ModelSpec) -> String {
-        var parts = [model.kind.rawValue, model.providerId.raw, ApiModes.label(model.apiMode)]
+        var parts = [model.kind.rawValue, model.providerId.raw, settings.apiModeLabel(model.apiMode)]
         if !model.ops.isEmpty {
             parts.append(model.ops.map(\.rawValue).joined(separator: " / "))
         }

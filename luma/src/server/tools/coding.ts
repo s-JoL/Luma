@@ -576,7 +576,13 @@ export function codingTools(config: CodingCapability): AgentTool[] {
  * it is likely to retry.
  */
 function shellTool(workspace: string): AgentTool {
-  const env = new NodeExecutionEnv({ cwd: workspace });
+  // Git Bash rebuilds PATH from the Windows process environment. Production
+  // starts Luma with its bundled Node at the front, but other launchers (and
+  // the audit server) need the same guarantee here: coding commands are part of
+  // Luma, so they must not depend on a system-wide Node installation.
+  const nodeDir = path.dirname(process.execPath);
+  const shellPath = [nodeDir, process.env.PATH].filter(Boolean).join(path.delimiter);
+  const env = new NodeExecutionEnv({ cwd: workspace, shellEnv: { PATH: shellPath } });
   const bash = createBashTool();
   return {
     ...bash,

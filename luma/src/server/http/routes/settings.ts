@@ -20,7 +20,11 @@ import type { Store } from "../../store/store.ts";
 import { readJson } from "../body.ts";
 import { fail, failFromError } from "../errors.ts";
 
-const API_MODE_IDS = API_MODES.map((mode) => mode.id);
+const API_MODE_IDS = new Set(API_MODES.map((mode) => mode.id));
+
+function apiMode(input: unknown): ApiMode | undefined {
+  return typeof input === "string" && API_MODE_IDS.has(input as ApiMode) ? (input as ApiMode) : undefined;
+}
 
 export function settingsRoutes(services: Services) {
   const app = new Hono();
@@ -118,6 +122,7 @@ export function settingsRoutes(services: Services) {
     const body = await readJson<ModelInput>(context);
     if (!body.providerId || !body.model) return fail(context, 400, "invalid", "providerId and model are required");
     if (!store.getProvider(body.providerId)) return fail(context, 400, "invalid", "Unknown provider");
+    if (!apiMode(body.apiMode)) return fail(context, 400, "invalid", "Unknown apiMode");
     const id = slug(body.id || `${body.providerId}-${body.model}`, "model");
     if (store.getModel(id)) return fail(context, 409, "conflict", `Model ${id} already exists`);
     const model = store.upsertModel(normalizeModel({ ...body, id } as ModelInput));
@@ -134,6 +139,8 @@ export function settingsRoutes(services: Services) {
     const body = await readJson<{ providerId: string; models: ModelInput[] }>(context);
     const provider = store.getProvider(body.providerId ?? "");
     if (!provider) return fail(context, 400, "invalid", "Unknown provider");
+    const invalid = (body.models ?? []).find((entry) => entry.model && !apiMode(entry.apiMode));
+    if (invalid) return fail(context, 400, "invalid", `Unknown apiMode for ${invalid.model}`);
     const added: string[] = [];
     const skipped: string[] = [];
     let order = store.listModels().length;
@@ -159,6 +166,9 @@ export function settingsRoutes(services: Services) {
     const existing = store.getModel(id);
     if (!existing) return fail(context, 404, "not_found", "Model not found");
     const body = await readJson<ModelInput>(context);
+    if (body.apiMode !== undefined && !apiMode(body.apiMode)) {
+      return fail(context, 400, "invalid", "Unknown apiMode");
+    }
     const merged = { ...existing, ...body, id };
     store.upsertModel(normalizeModel(merged));
     services.reload();
@@ -318,10 +328,11 @@ export function settingsRoutes(services: Services) {
  * (`03-generation.md §Models grow a kind`).
  */
 function normalizeModel(input: ModelInput): ModelInput {
-  const apiMode = API_MODE_IDS.includes(input.apiMode as ApiMode) ? input.apiMode : "openai-chat";
-  const kind = kindFor(input.kind, apiMode);
+  const mode = apiMode(input.apiMode);
+  if (!mode) throw new Error(`Unknown apiMode: ${String(input.apiMode)}`);
+  const kind = kindFor(input.kind, mode);
   const generates = kind === "image" || kind === "video";
-  const ops = adapterOps(apiMode, kind, input.ops);
+  const ops = adapterOps(mode, kind, input.ops);
   return {
     id: input.id,
     providerId: input.providerId,
@@ -341,7 +352,7 @@ function normalizeModel(input: ModelInput): ModelInput {
     maxTokens: Math.max(256, Number(input.maxTokens) || 8192),
     thinkingLevel: generates ? "off" : (input.thinkingLevel ?? "off"),
     thinkingLevelMap: generates ? null : (input.thinkingLevelMap ?? null),
-    apiMode,
+    apiMode: mode,
     librechatCompat: Boolean(input.librechatCompat),
     systemPrompt: input.systemPrompt ?? null,
     temperature: generates ? null : (input.temperature ?? null),

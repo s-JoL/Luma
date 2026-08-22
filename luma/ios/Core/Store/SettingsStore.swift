@@ -54,6 +54,20 @@ final class SettingsStore {
     /// the switcher offers.
     var chatModels: [ModelSpec] { catalogue.items.filter { $0.kind == .chat } }
 
+    var chatApiModes: [ApiModeOption] { apiModes(for: .chat) }
+
+    func apiModes(for kind: ModelKind) -> [ApiModeOption] {
+        (app?.bootstrap?.apiModes ?? []).filter { $0.kinds.contains(kind) }
+    }
+
+    func apiModeLabel(_ id: String) -> String {
+        app?.bootstrap?.apiModes?.first { $0.id == id }?.label ?? id
+    }
+
+    func apiModePath(_ id: String) -> String {
+        app?.bootstrap?.apiModes?.first { $0.id == id }?.path ?? ""
+    }
+
     func generationModels(_ kind: ModelKind, op: GenerationOp? = nil) -> [ModelSpec] {
         catalogue.items.filter { model in
             model.kind == kind && model.enabled && (op.map(model.supports) ?? true)

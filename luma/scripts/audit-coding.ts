@@ -234,6 +234,8 @@ await check("grep finds matches and survives without ripgrep", async () => {
 await check("failing command reports its output", async () => {
   const ok = await call(SHELL_TOOL, { command: "echo luma-ok" });
   assert(/luma-ok/.test(ok.text), ok.text);
+  const node = await call(SHELL_TOOL, { command: "node --version" });
+  assert(/^v2[4-9]\./m.test(node.text), `bundled Node is not reachable: ${node.text}`);
   // One shell language on every host is the point of borrowing pi's tool: this
   // is the same command on Windows as it is anywhere else.
   const message = await rejects(
@@ -242,7 +244,7 @@ await check("failing command reports its output", async () => {
     "non-zero exit",
   );
   assert(/boom/.test(message), `stderr not surfaced: ${message}`);
-  return "exit code and stderr both reach the model";
+  return "bundled Node, exit code and stderr all reach the model";
 });
 
 const failed = results.filter((result) => !result.ok);

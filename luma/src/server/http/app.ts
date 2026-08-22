@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
-import type { Bootstrap } from "@shared/types.ts";
+import { API_MODES, type Bootstrap } from "@shared/types.ts";
 import { MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, paths } from "../env.ts";
 import type { Services } from "../services.ts";
 import {
@@ -104,6 +104,7 @@ export function createApp(services: Services) {
     const generation = services.config.generationDefaults();
     const bootstrap: Bootstrap = {
       version: VERSION,
+      apiModes: API_MODES,
       models: services.store.listModels(),
       providers: services.store.listProviders(),
       defaultModelId: services.config.defaultModelId(),

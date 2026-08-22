@@ -78,8 +78,7 @@ SSE 要按**字节**解析，不能用 `bytes.lines`。Foundation 的 `AsyncLine
 一保存就会把没渲染的抹掉。
 
 创作表单由服务端 schema 渲染，工具顺序跟 `/studio/tools`（默认后端优先）。新 adapter 不应迫使
-App 发版——唯一的例外是 `API_MODES`：那张表决定跑哪个 adapter，随服务端一起发布，`/v1` 上没有
-任何路由把它送出来，所以 `SettingsAdmin.swift` 里镜像了一份，新接口模式要在那儿补一行。
+App 发版：`bootstrap.apiModes` 同样由服务端发布，设置页直接用这份目录渲染名称、路径和可用模型类型。
 
 `Luma.xcodeproj` 由 `project.yml` 生成、不入版本控制：XcodeGen 把目录展开成一条条
 文件引用，所以新增文件之后要跑 `xcodegen generate`，否则它根本不参与编译。

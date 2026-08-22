@@ -780,6 +780,26 @@ await check("an unbound generation slot still offers a working image backend", a
   return "keyed hosted, not the first Comfy row";
 });
 
+await check("an unconfigured generation default falls back to a runnable editor", async () => {
+  const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
+  const { Config } = await import("../src/server/config.ts");
+  const config = new Config(store, vault);
+  config.setGenerationDefaults({ imageModelId: "hosted-image", editModelId: "hosted-image" });
+  vault.delete(SECRET.provider("hosted"));
+  try {
+    const resolved = resolveGeneration(store, config);
+    assert(resolved.image?.id !== "hosted-image", "drawing kept the unconfigured default");
+    assert(resolved.image?.configured !== false, `drawing fell back to unconfigured ${resolved.image?.id ?? "nothing"}`);
+    assert(resolved.edit?.id !== "hosted-image", "editing kept the unconfigured default");
+    assert(resolved.edit?.configured !== false, `editing fell back to unconfigured ${resolved.edit?.id ?? "nothing"}`);
+    assert(Boolean(resolved.edit && supportsOp(resolved.edit, "image_to_image")), "fallback cannot edit");
+    return `missing hosted key → ${resolved.image?.id} draw and ${resolved.edit?.id} edit`;
+  } finally {
+    vault.set(SECRET.provider("hosted"), "test-key");
+    config.setGenerationDefaults({ imageModelId: "", editModelId: "" });
+  }
+});
+
 await check("a model asked for by name gets a tool of its own, and never twice", async () => {
   const { resolveGeneration } = await import("../src/server/agent/defaults.ts");
   const { Config } = await import("../src/server/config.ts");

@@ -630,6 +630,7 @@ export interface Provenance {
 
 export interface Bootstrap {
   version: string;
+  apiModes: typeof API_MODES;
   models: ModelSpec[];
   providers: Provider[];
   defaultModelId: string;

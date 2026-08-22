@@ -77,6 +77,7 @@ struct ModelRow: View {
     let model: ModelSpec
     let provider: Provider?
     let isDefault: Bool
+    let apiModeLabel: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -96,7 +97,7 @@ struct ModelRow: View {
     }
 
     private var subtitle: String {
-        var parts = [provider?.name ?? model.providerId.raw, model.model, ApiModes.label(model.apiMode)]
+        var parts = [provider?.name ?? model.providerId.raw, model.model, apiModeLabel]
         if model.contextWindow > 0 { parts.append("\(model.contextWindow / 1000)k 上下文") }
         if model.reasoning { parts.append("思考 \(model.thinkingLevel)") }
         return parts.joined(separator: " · ")

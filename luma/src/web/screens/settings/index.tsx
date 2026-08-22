@@ -23,13 +23,13 @@ type Tab = "providers" | "models" | "tools" | "capabilities" | "prompts" | "secu
  * work when asked", and which of them is implemented as a subprocess is our
  * business rather than the reader's.
  */
-const TABS: Array<{ id: Tab; label: string; icon: typeof Boxes }> = [
-  { id: "providers", label: "提供方", icon: Plug },
-  { id: "models", label: "对话模型", icon: Boxes },
-  { id: "tools", label: "工具与后端", icon: Server },
-  { id: "capabilities", label: "能力", icon: SlidersHorizontal },
-  { id: "prompts", label: "提示词", icon: Terminal },
-  { id: "security", label: "安全", icon: KeyRound },
+const TABS: Array<{ id: Tab; label: string; group: "连接" | "能力" | "系统"; icon: typeof Boxes }> = [
+  { id: "providers", label: "提供方", group: "连接", icon: Plug },
+  { id: "models", label: "对话模型", group: "连接", icon: Boxes },
+  { id: "tools", label: "工具与后端", group: "能力", icon: Server },
+  { id: "capabilities", label: "能力开关", group: "能力", icon: SlidersHorizontal },
+  { id: "prompts", label: "提示词", group: "系统", icon: Terminal },
+  { id: "security", label: "安全", group: "系统", icon: KeyRound },
 ];
 
 /** Where a link to a page that no longer exists should land instead. */
@@ -72,21 +72,27 @@ export function Settings({
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <nav className="flex shrink-0 gap-1 overflow-x-auto border-b p-2 lg:w-56 lg:flex-col lg:overflow-y-auto lg:border-r lg:border-b-0 lg:p-3">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              aria-current={tab === id ? "page" : undefined}
-              className={cn(
-                "flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors lg:w-full",
-                tab === id
-                  ? "bg-accent font-medium text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+          {TABS.map(({ id, label, group, icon: Icon }, index) => (
+            <div key={id} className="contents lg:block">
+              {(index === 0 || TABS[index - 1]?.group !== group) && (
+                <div className="mt-2 hidden px-3 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground/70 first:mt-0 lg:block">
+                  {group}
+                </div>
               )}
-              onClick={() => open(id)}
-            >
-              <Icon className="size-4" />
-              {label}
-            </button>
+              <button
+                aria-current={tab === id ? "page" : undefined}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors lg:w-full",
+                  tab === id
+                    ? "bg-accent font-medium text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                )}
+                onClick={() => open(id)}
+              >
+                <Icon className="size-4" />
+                {label}
+              </button>
+            </div>
           ))}
         </nav>
 

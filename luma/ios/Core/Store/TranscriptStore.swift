@@ -102,6 +102,7 @@ final class TranscriptStore {
     private var follower: Task<Void, Never>?
     private var publisher: Task<Void, Never>?
     private var background: Task<Void, Never>?
+    private var warmer: Task<Void, Never>?
     /// Set by an applied event, cleared by the tick that publishes it.
     private var dirty = false
 
@@ -121,6 +122,8 @@ final class TranscriptStore {
         publisher = nil
         background?.cancel()
         background = nil
+        warmer?.cancel()
+        warmer = nil
     }
 
     // MARK: Opening
@@ -207,7 +210,7 @@ final class TranscriptStore {
             earliestSeq = page.items.map(\.seq).min()
             hasMoreHistory = page.nextCursor != nil
             citations = CitationIndex(Citations.collect(from: turns))
-            MarkdownCache.warm(older, citations: citations)
+            warm(older)
         } catch {
             // Leave `hasMoreHistory` set so scrolling up tries again.
         }
@@ -232,13 +235,20 @@ final class TranscriptStore {
         // Parse the prose the reader has not scrolled to yet, off the main
         // thread, before they do. A block parsed on first sight is parsed during
         // the scroll that revealed it.
-        MarkdownCache.warm(turns, citations: citations)
+        warm(turns)
         dropPendingOncePersisted()
         // Sequence numbers are dense from zero within a conversation, so the
         // highest one seen is the count. Told to the list here because this is
         // the only place that learns it — the row it came with was a snapshot
         // from whenever the list was last read.
         app?.conversations.setMessageCount(messageSeq + 1, for: id)
+    }
+
+    /// A transcript owns one speculative parse at a time. Replacing the page or
+    /// evicting the transcript cancels work whose result is no longer useful.
+    private func warm(_ turns: [Turn]) {
+        warmer?.cancel()
+        warmer = MarkdownCache.warm(turns, citations: citations)
     }
 
     /// The optimistic bubble goes when the real one takes its place, and not

@@ -81,12 +81,7 @@ final class AppModel {
         if base != serverURL {
             AuthStore.token = nil
             await api.setToken(nil)
-            bootstrap = nil
-            conversations.reset()
-            library.reset()
-            memory.reset()
-            studio.reset()
-            approvals.reset()
+            resetServerState()
         }
 
         ServerLocator.baseURL = base
@@ -95,10 +90,13 @@ final class AppModel {
         session = AuthStore.token == nil ? .signedOut : .signedIn
     }
 
-    func forgetServer() {
+    func forgetServer() async {
+        AuthStore.token = nil
+        await api.setToken(nil)
         ServerLocator.baseURL = nil
         serverURL = nil
         session = .needsServer
+        resetServerState()
     }
 
     // MARK: Sign in
@@ -123,16 +121,28 @@ final class AppModel {
         let client = api
         AuthStore.token = nil
         session = .signedOut
-        bootstrap = nil
+        resetServerState()
+        // The authenticated request is sequenced before clearing the actor's
+        // token. A fire-and-forget task raced setToken(nil), leaving the server
+        // session alive whenever the token clear won.
+        try? await client.send(.logout())
+        await client.setToken(nil)
+    }
+
+    /// Nothing fetched from one server may survive a server switch or logout.
+    /// Detaching first also stops streams and prewarming owned by cached
+    /// transcripts instead of merely hiding those stores from the dictionary.
+    private func resetServerState() {
+        for transcript in open.values { transcript.detach() }
         open.removeAll()
         recent.removeAll()
+        opening = nil
+        bootstrap = nil
         conversations.reset()
         library.reset()
         memory.reset()
         studio.reset()
         approvals.reset()
-        Task { try? await client.send(.logout()) }
-        await api.setToken(nil)
     }
 
     // MARK: Cold start

@@ -115,13 +115,14 @@ struct MarkdownCacheTests {
 
         let text = answer(paragraphs: 12)
         let turn = Turn(id: "t1", seq: 0, role: .assistant, parts: [.text(text)])
-        MarkdownCache.warm([turn], citations: CitationIndex())
+        let warming = MarkdownCache.warm([turn], citations: CitationIndex())
 
         // The warm runs on a detached task; wait for it rather than racing it.
         let deadline = Date().addingTimeInterval(5)
         while MarkdownCache.parses < 12, Date() < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        await warming.value
         let warmed = MarkdownCache.parses
         #expect(warmed >= 12, "prewarm should have parsed every block, got \(warmed)")
 

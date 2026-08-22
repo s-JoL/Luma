@@ -144,18 +144,19 @@ enum MarkdownCache {
     /// string, so they run on a background task; only the finished value crosses
     /// back. Called when turns change, which is exactly when the app learns
     /// about prose the reader has not reached yet.
-    static func warm(_ turns: [Turn], citations: CitationIndex) {
+    @discardableResult
+    static func warm(_ turns: [Turn], citations: CitationIndex) -> Task<Void, Never> {
         let sources = turns
             .flatMap(\.parts)
             .compactMap { part -> String? in
                 if case .text(let text) = part { return text } else { return nil }
             }
-        guard !sources.isEmpty else { return }
+        guard !sources.isEmpty else { return Task {} }
 
         let map = citations.map
         let token = citations.token
 
-        Task.detached(priority: .utility) {
+        return Task.detached(priority: .utility) {
             for source in sources {
                 if Task.isCancelled { return }
                 // All of this is pure string work and runs off the main actor.

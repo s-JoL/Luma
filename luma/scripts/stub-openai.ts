@@ -26,7 +26,7 @@ interface ChatMessage {
 
 interface ChatRequest {
   messages?: ChatMessage[];
-  tools?: Array<{ type?: string; function?: { name?: string }; name?: string }>;
+  tools?: Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown }; name?: string }>;
   stream?: boolean;
 }
 
@@ -143,7 +143,10 @@ function decide(body: ChatRequest): Reply {
 
   const editTool = names.find((name) => name.includes("edit_image"));
   if (editTool && /改成/.test(user) && /图/.test(user) && !used.some((name) => name.includes("edit_image"))) {
-    const source = all.match(/img_[0-9a-f]{32}/)?.[0] ?? "";
+    // Uploaded image ids are intentionally exposed to the model through the
+    // edit tool schema, not repeated in the user's prose. The fixture must read
+    // the same model-visible request surface a real model reads.
+    const source = `${all}\n${JSON.stringify(body.tools ?? [])}`.match(/img_[0-9a-f]{32}/)?.[0] ?? "";
     return {
       kind: "tool",
       name: editTool,

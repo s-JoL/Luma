@@ -6,6 +6,9 @@ import Foundation
 /// `GET /conversations?limit=` in parallel (`05-api.md §启动包`).
 struct Bootstrap: Decodable, Sendable {
     let version: String
+    /// Optional only so a newer app can still sign into a server from before
+    /// this catalogue joined the bootstrap. Current servers always send it.
+    let apiModes: [ApiModeOption]?
     let models: [ModelSpec]
     let providers: [Provider]
     let defaultModelId: ModelId
@@ -43,6 +46,15 @@ struct Bootstrap: Decodable, Sendable {
     func model(_ id: ModelId) -> ModelSpec? {
         models.first { $0.id == id }
     }
+}
+
+/// The server's adapter catalogue. Settings renders this rather than carrying a
+/// second copy that can drift from the routes the connected server implements.
+struct ApiModeOption: Decodable, Sendable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    let path: String
+    let kinds: [ModelKind]
 }
 
 enum ModelKind: String, Codable, Sendable {

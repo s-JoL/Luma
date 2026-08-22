@@ -196,24 +196,37 @@ struct StudioView: View {
 
     /// Every adjustable value, as its value.
     private var paramChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.xs) {
-                ForEach(adjustable, id: \.name) { parameter in
-                    Button {
-                        editing = parameter
-                    } label: {
-                        ParamChip(
-                            label: parameter.label,
-                            value: display(parameter),
-                            isPlaceholder: store.values[parameter.name] == nil
-                        )
-                    }
-                    .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text("参数")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.mutedFg)
+                Spacer()
+                if adjustable.count > 2 {
+                    Label("横向滑动", systemImage: "arrow.left.and.right")
+                        .font(.caption2)
+                        .foregroundStyle(Color.mutedFg)
                 }
             }
-            .padding(.horizontal, 2)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xs) {
+                    ForEach(adjustable, id: \.name) { parameter in
+                        Button {
+                            editing = parameter
+                        } label: {
+                            ParamChip(
+                                label: parameter.label,
+                                value: display(parameter),
+                                isPlaceholder: store.values[parameter.name] == nil
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(height: 34)
         }
-        .frame(height: 34)
     }
 
     private var composer: some View {

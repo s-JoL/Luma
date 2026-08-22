@@ -36,7 +36,8 @@ struct ModelsSettingsView: View {
                         ModelRow(
                             model: model,
                             provider: settings.provider(model.providerId),
-                            isDefault: model.id.raw == settings.catalogue.defaultModelId
+                            isDefault: model.id.raw == settings.catalogue.defaultModelId,
+                            apiModeLabel: settings.apiModeLabel(model.apiMode)
                         )
                     }
                     .swipeActions(edge: .leading) {
@@ -171,7 +172,7 @@ private struct ModelEditorView: View {
                 }
                 TextField("模型 ID", text: $draft.model).exactEntry()
                 Picker("接口模式", selection: $draft.apiMode) {
-                    ForEach(ApiModes.chat) { mode in
+                    ForEach(settings.chatApiModes) { mode in
                         Text(mode.label).tag(mode.id)
                     }
                 }
@@ -279,7 +280,7 @@ private struct ModelEditorView: View {
 
     private var endpoint: String {
         let base = settings.providers.first { $0.id.raw == draft.providerId }?.baseUrl ?? "…"
-        return base + ApiModes.path(draft.apiMode)
+        return base + settings.apiModePath(draft.apiMode)
     }
 
     private func save() async {
@@ -497,7 +498,7 @@ private struct DiscoverModelsView: View {
     }
 
     private func describe(_ suggestion: DiscoveredModel.Suggestion) -> String {
-        var parts = [suggestion.kind.rawValue, ApiModes.label(suggestion.apiMode)]
+        var parts = [suggestion.kind.rawValue, settings.apiModeLabel(suggestion.apiMode)]
         if !suggestion.ops.isEmpty {
             parts.append(suggestion.ops.map(\.rawValue).joined(separator: " / "))
         }

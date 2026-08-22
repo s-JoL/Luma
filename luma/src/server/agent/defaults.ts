@@ -28,7 +28,9 @@ export interface ResolvedGeneration {
 }
 
 const enabledGeneration = (store: Store, kind: "image" | "video") =>
-  store.listModels().filter((spec) => spec.enabled && spec.kind === kind && isRunnable(spec));
+  store
+    .listModels()
+    .filter((spec) => spec.enabled && spec.configured !== false && spec.kind === kind && isRunnable(spec));
 
 /** Comfy is always configured. Prefer a hosted backend that actually has a key. */
 function preferReady(specs: ModelSpec[]) {

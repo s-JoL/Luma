@@ -277,7 +277,8 @@ export function webSearchTool(options: {
         read_pages?: number;
       };
       const turn = turnCounter++;
-      const adapter = ADAPTERS.get(provider) ?? ADAPTERS.get(DEFAULT_PROVIDER)!;
+      const adapter = ADAPTERS.get(provider);
+      if (!adapter) throw new Error(`Unknown web search provider: ${provider}`);
       const apiKey = options.getApiKey();
       if (adapter.requiresKey && !apiKey) {
         throw new Error(`Web search is selected but the ${adapter.id} API key is not configured`);
